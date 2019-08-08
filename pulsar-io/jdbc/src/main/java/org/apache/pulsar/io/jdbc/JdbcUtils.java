@@ -111,9 +111,11 @@ public class JdbcUtils {
     public static String getDriverClassName(String driver) throws Exception {
         if (driver.equals("mysql")) {
             return "com.mysql.jdbc.Driver";
-        } if (driver.equals("sqlite")) {
+        } else if (driver.equals("sqlite")) {
             return "org.sqlite.JDBC";
-        } else {
+        } else if (driver.equals("clickhouse")) {
+            return "ru.yandex.clickhouse.ClickHouseDriver";
+        }else {
             throw new Exception("Not tested jdbc driver type: " + driver);
         }
     }
