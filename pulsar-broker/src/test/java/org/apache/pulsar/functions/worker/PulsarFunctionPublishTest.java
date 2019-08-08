@@ -40,11 +40,11 @@ import org.apache.pulsar.client.api.Schema;
 import org.apache.pulsar.client.impl.auth.AuthenticationTls;
 import org.apache.pulsar.common.functions.FunctionConfig;
 import org.apache.pulsar.common.functions.Utils;
-import org.apache.pulsar.common.naming.TopicName;
 import org.apache.pulsar.common.policies.data.ClusterData;
 import org.apache.pulsar.common.policies.data.FunctionStats;
 import org.apache.pulsar.common.policies.data.SubscriptionStats;
 import org.apache.pulsar.common.policies.data.TenantInfo;
+import org.apache.pulsar.common.util.FutureUtil;
 import org.apache.pulsar.zookeeper.LocalBookkeeperEnsemble;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,7 +55,6 @@ import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
 import java.io.File;
-import java.io.FilenameFilter;
 import java.lang.reflect.Method;
 import java.net.URL;
 import java.util.Arrays;
@@ -122,11 +121,7 @@ public class PulsarFunctionPublishTest {
 
         // delete all function temp files
         File dir = new File(System.getProperty("java.io.tmpdir"));
-        File[] foundFiles = dir.listFiles(new FilenameFilter() {
-            public boolean accept(File dir, String name) {
-                return name.startsWith("function");
-            }
-        });
+        File[] foundFiles = dir.listFiles((ignoredDir, name) -> name.startsWith("function"));
 
         for (File file : foundFiles) {
             file.delete();
@@ -148,11 +143,11 @@ public class PulsarFunctionPublishTest {
         config.setClusterName("use");
         Set<String> superUsers = Sets.newHashSet("superUser");
         config.setSuperUserRoles(superUsers);
-        config.setWebServicePort(brokerWebServicePort);
-        config.setWebServicePortTls(brokerWebServiceTlsPort);
+        config.setWebServicePort(Optional.of(brokerWebServicePort));
+        config.setWebServicePortTls(Optional.of(brokerWebServiceTlsPort));
         config.setZookeeperServers("127.0.0.1" + ":" + ZOOKEEPER_PORT);
-        config.setBrokerServicePort(brokerServicePort);
-        config.setBrokerServicePortTls(brokerServiceTlsPort);
+        config.setBrokerServicePort(Optional.of(brokerServicePort));
+        config.setBrokerServicePortTls(Optional.of(brokerServiceTlsPort));
         config.setLoadManagerClassName(SimpleLoadManagerImpl.class.getName());
         config.setTlsAllowInsecureConnection(true);
         config.setAdvertisedAddress("localhost");
@@ -215,7 +210,8 @@ public class PulsarFunctionPublishTest {
         propAdmin.setAllowedClusters(Sets.newHashSet(Lists.newArrayList("use")));
         admin.tenants().updateTenant(tenant, propAdmin);
 
-        System.setProperty(JAVA_INSTANCE_JAR_PROPERTY, "");
+        System.setProperty(JAVA_INSTANCE_JAR_PROPERTY,
+                FutureUtil.class.getProtectionDomain().getCodeSource().getLocation().getPath());
 
     }
 
@@ -279,7 +275,7 @@ public class PulsarFunctionPublishTest {
         functionConfig.setSubName(subscriptionName);
         functionConfig.setInputs(Collections.singleton(sourceTopic));
         functionConfig.setAutoAck(true);
-        functionConfig.setClassName("org.apache.pulsar.functions.api.examples.PublishFunctionWithMessageConf");
+        functionConfig.setClassName("org.apache.pulsar.functions.api.examples.TypedMessageBuilderPublish");
         functionConfig.setRuntime(FunctionConfig.Runtime.JAVA);
         Map<String, Object> userConfig = new HashMap<>();
         userConfig.put("publish-topic", publishTopic);
@@ -374,11 +370,7 @@ public class PulsarFunctionPublishTest {
 
         // make sure all temp files are deleted
         File dir = new File(System.getProperty("java.io.tmpdir"));
-        File[] foundFiles = dir.listFiles(new FilenameFilter() {
-            public boolean accept(File dir, String name) {
-                return name.startsWith("function");
-            }
-        });
+        File[] foundFiles = dir.listFiles((dir1, name) -> name.startsWith("function"));
 
         Assert.assertEquals(foundFiles.length, 0, "Temporary files left over: " + Arrays.asList(foundFiles));
     }

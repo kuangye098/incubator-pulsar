@@ -34,6 +34,7 @@ import org.apache.pulsar.functions.secretsproviderconfigurator.SecretsProviderCo
 import org.apache.pulsar.functions.utils.FunctionCommon;
 import org.testng.Assert;
 import org.testng.annotations.AfterMethod;
+import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
 import java.lang.reflect.Type;
@@ -43,6 +44,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import static org.apache.pulsar.functions.runtime.RuntimeUtils.FUNCTIONS_INSTANCE_CLASSPATH;
+import static org.apache.pulsar.functions.utils.FunctionCommon.roundDecimal;
 import static org.powermock.api.mockito.PowerMockito.doNothing;
 import static org.powermock.api.mockito.PowerMockito.spy;
 import static org.testng.Assert.assertEquals;
@@ -135,6 +138,11 @@ public class KubernetesRuntimeTest {
         this.logDirectory = "logs/functions";
     }
 
+    @BeforeClass
+    public void setup() {
+        System.setProperty(FUNCTIONS_INSTANCE_CLASSPATH, "/pulsar/lib/*");
+    }
+
     @AfterMethod
     public void tearDown() {
         if (null != this.factory) {
@@ -142,7 +150,8 @@ public class KubernetesRuntimeTest {
         }
     }
 
-    KubernetesRuntimeFactory createKubernetesRuntimeFactory(String extraDepsDir, int percentMemoryPadding) throws Exception {
+    KubernetesRuntimeFactory createKubernetesRuntimeFactory(String extraDepsDir, int percentMemoryPadding,
+                                                            double cpuOverCommitRatio, double memoryOverCommitRatio) throws Exception {
         KubernetesRuntimeFactory factory = spy(new KubernetesRuntimeFactory(
             null,
             null,
@@ -156,6 +165,8 @@ public class KubernetesRuntimeTest {
             extraDepsDir,
             null,
                 percentMemoryPadding,
+                cpuOverCommitRatio,
+                memoryOverCommitRatio,
                 pulsarServiceUrl,
             pulsarAdminUrl,
             stateStorageServiceUrl,
@@ -215,7 +226,7 @@ public class KubernetesRuntimeTest {
     }
 
     private void verifyRamPadding(int percentMemoryPadding, long ram, long expectedRamWithPadding) throws Exception {
-        factory = createKubernetesRuntimeFactory(null, percentMemoryPadding);
+        factory = createKubernetesRuntimeFactory(null, percentMemoryPadding, 1.0, 1.0);
         InstanceConfig config = createJavaInstanceConfig(FunctionDetails.Runtime.JAVA, true);
 
         KubernetesRuntime container = factory.createContainer(config, userJarFile, userJarFile, 30l);
@@ -233,7 +244,7 @@ public class KubernetesRuntimeTest {
     public void testJavaConstructor() throws Exception {
         InstanceConfig config = createJavaInstanceConfig(FunctionDetails.Runtime.JAVA, false);
 
-        factory = createKubernetesRuntimeFactory(null, 10);
+        factory = createKubernetesRuntimeFactory(null, 10, 1.0, 1.0);
 
         verifyJavaInstance(config, pulsarRootDir + "/instances/deps", false);
     }
@@ -242,7 +253,7 @@ public class KubernetesRuntimeTest {
     public void testJavaConstructorWithSecrets() throws Exception {
         InstanceConfig config = createJavaInstanceConfig(FunctionDetails.Runtime.JAVA, true);
 
-        factory = createKubernetesRuntimeFactory(null, 10);
+        factory = createKubernetesRuntimeFactory(null, 10, 1.0, 1.0);
 
         verifyJavaInstance(config, pulsarRootDir + "/instances/deps", true);
     }
@@ -253,11 +264,45 @@ public class KubernetesRuntimeTest {
 
         String extraDepsDir = "/path/to/deps/dir";
 
-        factory = createKubernetesRuntimeFactory(extraDepsDir, 10);
+        factory = createKubernetesRuntimeFactory(extraDepsDir, 10, 1.0, 1.0);
 
         verifyJavaInstance(config, extraDepsDir, false);
     }
 
+    @Test
+    public void testResources() throws Exception {
+
+        // test overcommit
+        testResouces(1, 1000,1.0, 1.0);
+        testResouces(1, 1000,2.0, 1.0);
+        testResouces(1, 1000,1.0, 2.0);
+        testResouces(1, 1000,1.5, 1.5);
+        testResouces(1, 1000,1.3, 1.0);
+
+        // test cpu rounding
+        testResouces(1.0 / 1.5, 1000,1.3, 1.0);
+    }
+
+    public void testResouces(double userCpuRequest, long userMemoryRequest, double cpuOverCommitRatio, double memoryOverCommitRatio) throws Exception {
+
+        Function.Resources resources = Function.Resources.newBuilder()
+                .setRam(userMemoryRequest).setCpu(userCpuRequest).setDisk(10000L).build();
+
+        InstanceConfig config = createJavaInstanceConfig(FunctionDetails.Runtime.JAVA, false);
+        factory = createKubernetesRuntimeFactory(null, 10, cpuOverCommitRatio, memoryOverCommitRatio);
+        KubernetesRuntime container = factory.createContainer(config, userJarFile, userJarFile, 30l);
+        List<String> args = container.getProcessArgs();
+
+        // check padding and xmx
+        long heap = Long.parseLong(args.stream().filter(s -> s.startsWith("-Xmx")).collect(Collectors.toList()).get(0).replace("-Xmx", ""));
+        V1Container containerSpec = container.getFunctionContainer(Collections.emptyList(), resources);
+        assertEquals(containerSpec.getResources().getLimits().get("memory").getNumber().longValue(), Math.round(heap + (heap * 0.1)));
+        assertEquals(containerSpec.getResources().getRequests().get("memory").getNumber().longValue(), Math.round((heap + (heap * 0.1)) / memoryOverCommitRatio));
+
+        // check cpu
+        assertEquals(containerSpec.getResources().getRequests().get("cpu").getNumber().doubleValue(), roundDecimal(resources.getCpu() / cpuOverCommitRatio, 3));
+        assertEquals(containerSpec.getResources().getLimits().get("cpu").getNumber().doubleValue(), roundDecimal(resources.getCpu(), 3));
+    }
 
     private void verifyJavaInstance(InstanceConfig config, String depsDir, boolean secretsAttached) throws Exception {
         KubernetesRuntime container = factory.createContainer(config, userJarFile, userJarFile, 30l);
@@ -288,13 +333,13 @@ public class KubernetesRuntimeTest {
             "Actual args : " + StringUtils.join(args, " "));
 
         String expectedArgs = "exec java -cp " + classpath
-                + " -Dpulsar.functions.java.instance.jar=" + javaInstanceJarFile
                 + extraDepsEnv
-                + " -Dlog4j.configurationFile=kubernetes_instance_log4j2.yml "
+                + " -Dpulsar.functions.instance.classpath=/pulsar/lib/*"
+                + " -Dlog4j.configurationFile=kubernetes_instance_log4j2.xml "
                 + "-Dpulsar.function.log.dir=" + logDirectory + "/" + FunctionCommon.getFullyQualifiedName(config.getFunctionDetails())
                 + " -Dpulsar.function.log.file=" + config.getFunctionDetails().getName() + "-$SHARD_ID"
                 + " -Xmx" + String.valueOf(RESOURCES.getRam())
-                + " org.apache.pulsar.functions.runtime.JavaInstanceMain"
+                + " org.apache.pulsar.functions.instance.JavaInstanceMain"
                 + " --jar " + pulsarRootDir + "/" + userJarFile + " --instance_id "
                 + "$SHARD_ID" + " --function_id " + config.getFunctionId()
                 + " --function_version " + config.getFunctionVersion()
@@ -326,7 +371,7 @@ public class KubernetesRuntimeTest {
     public void testPythonConstructor() throws Exception {
         InstanceConfig config = createJavaInstanceConfig(FunctionDetails.Runtime.PYTHON, false);
 
-        factory = createKubernetesRuntimeFactory(null, 10);
+        factory = createKubernetesRuntimeFactory(null, 10, 1.0, 1.0);
 
         verifyPythonInstance(config, pulsarRootDir + "/instances/deps", false);
     }
@@ -337,7 +382,7 @@ public class KubernetesRuntimeTest {
 
         String extraDepsDir = "/path/to/deps/dir";
 
-        factory = createKubernetesRuntimeFactory(extraDepsDir, 10);
+        factory = createKubernetesRuntimeFactory(extraDepsDir, 10, 1.0, 1.0);
 
         verifyPythonInstance(config, extraDepsDir, false);
     }

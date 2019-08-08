@@ -118,6 +118,135 @@ public class InterceptorsTest extends ProducerConsumerBase {
     }
 
     @Test
+    public void testProducerInterceptorsWithExceptions() throws PulsarClientException {
+        ProducerInterceptor<String> interceptor = new ProducerInterceptor<String>() {
+            @Override
+            public void close() {
+
+            }
+
+            @Override
+            public Message<String> beforeSend(Producer<String> producer, Message<String> message) {
+                throw new NullPointerException();
+            }
+
+            @Override
+            public void onSendAcknowledgement(Producer<String> producer, Message<String> message, MessageId msgId, Throwable exception) {
+                throw new NullPointerException();
+            }
+        };
+        Producer<String> producer = pulsarClient.newProducer(Schema.STRING)
+            .topic("persistent://my-property/my-ns/my-topic")
+            .intercept(interceptor)
+            .create();
+
+        MessageId messageId = producer.newMessage().value("Hello Pulsar!").send();
+        Assert.assertNotNull(messageId);
+        producer.close();
+    }
+
+    @Test
+    public void testProducerInterceptorsWithErrors() throws PulsarClientException {
+        ProducerInterceptor<String> interceptor = new ProducerInterceptor<String>() {
+            @Override
+            public void close() {
+
+            }
+
+            @Override
+            public Message<String> beforeSend(Producer<String> producer, Message<String> message) {
+                throw new AbstractMethodError();
+            }
+
+            @Override
+            public void onSendAcknowledgement(Producer<String> producer, Message<String> message, MessageId msgId, Throwable exception) {
+                throw new AbstractMethodError();
+            }
+        };
+        Producer<String> producer = pulsarClient.newProducer(Schema.STRING)
+                .topic("persistent://my-property/my-ns/my-topic")
+                .intercept(interceptor)
+                .create();
+
+        MessageId messageId = producer.newMessage().value("Hello Pulsar!").send();
+        Assert.assertNotNull(messageId);
+        producer.close();
+    }
+
+    @Test
+    public void testConsumerInterceptorWithErrors() throws PulsarClientException {
+        ConsumerInterceptor<String> interceptor = new ConsumerInterceptor<String>() {
+            @Override
+            public void close() {
+                throw new AbstractMethodError();
+            }
+
+            @Override
+            public Message<String> beforeConsume(Consumer<String> consumer, Message<String> message) {
+                throw new AbstractMethodError();
+            }
+
+            @Override
+            public void onAcknowledge(Consumer<String> consumer, MessageId messageId, Throwable exception) {
+                throw new AbstractMethodError();
+            }
+
+            @Override
+            public void onAcknowledgeCumulative(Consumer<String> consumer, MessageId messageId, Throwable exception) {
+                throw new AbstractMethodError();
+            }
+
+            @Override
+            public void onNegativeAcksSend(Consumer<String> consumer, Set<MessageId> messageIds) {
+                throw new AbstractMethodError();
+            }
+
+            @Override
+            public void onAckTimeoutSend(Consumer<String> consumer, Set<MessageId> messageIds) {
+                throw new AbstractMethodError();
+            }
+        };
+        Consumer<String> consumer1 = pulsarClient.newConsumer(Schema.STRING)
+                .topic("persistent://my-property/my-ns/my-topic-exception")
+                .subscriptionType(SubscriptionType.Shared)
+                .intercept(interceptor)
+                .subscriptionName("my-subscription-ack-timeout")
+                .ackTimeout(3, TimeUnit.SECONDS)
+                .subscribe();
+
+        Consumer<String> consumer2 = pulsarClient.newConsumer(Schema.STRING)
+                .topic("persistent://my-property/my-ns/my-topic-exception")
+                .subscriptionType(SubscriptionType.Shared)
+                .intercept(interceptor)
+                .subscriptionName("my-subscription-negative")
+                .subscribe();
+
+        Producer<String> producer = pulsarClient.newProducer(Schema.STRING)
+                .topic("persistent://my-property/my-ns/my-topic-exception")
+                .create();
+
+        producer.newMessage().value("Hello Pulsar!").send();
+
+        Message<String> received = consumer1.receive();
+        Assert.assertEquals(received.getValue(), "Hello Pulsar!");
+        // wait ack timeout
+        Message<String> receivedAgain = consumer1.receive();
+        Assert.assertEquals(receivedAgain.getValue(), "Hello Pulsar!");
+        consumer1.acknowledge(receivedAgain);
+
+        received = consumer2.receive();
+        Assert.assertEquals(received.getValue(), "Hello Pulsar!");
+        consumer2.negativeAcknowledge(received);
+        receivedAgain = consumer2.receive();
+        Assert.assertEquals(receivedAgain.getValue(), "Hello Pulsar!");
+        consumer2.acknowledge(receivedAgain);
+
+        producer.close();
+        consumer1.close();
+        consumer2.close();
+    }
+
+    @Test
     public void testConsumerInterceptorWithSingleTopicSubscribe() throws PulsarClientException {
         ConsumerInterceptor<String> interceptor = new ConsumerInterceptor<String>() {
             @Override
@@ -144,6 +273,11 @@ public class InterceptorsTest extends ProducerConsumerBase {
 
             @Override
             public void onNegativeAcksSend(Consumer<String> consumer, Set<MessageId> messageIds) {
+
+            }
+
+            @Override
+            public void onAckTimeoutSend(Consumer<String> consumer, Set<MessageId> messageIds) {
 
             }
         };
@@ -203,6 +337,11 @@ public class InterceptorsTest extends ProducerConsumerBase {
 
             @Override
             public void onNegativeAcksSend(Consumer<String> consumer, Set<MessageId> messageIds) {
+
+            }
+
+            @Override
+            public void onAckTimeoutSend(Consumer<String> consumer, Set<MessageId> messageIds) {
 
             }
         };
@@ -270,6 +409,11 @@ public class InterceptorsTest extends ProducerConsumerBase {
 
             @Override
             public void onNegativeAcksSend(Consumer<String> consumer, Set<MessageId> messageIds) {
+
+            }
+
+            @Override
+            public void onAckTimeoutSend(Consumer<String> consumer, Set<MessageId> messageIds) {
 
             }
         };
@@ -344,6 +488,11 @@ public class InterceptorsTest extends ProducerConsumerBase {
             public void onNegativeAcksSend(Consumer<String> consumer, Set<MessageId> messageIds) {
 
             }
+
+            @Override
+            public void onAckTimeoutSend(Consumer<String> consumer, Set<MessageId> messageIds) {
+
+            }
         };
 
         Consumer<String> consumer = pulsarClient.newConsumer(Schema.STRING)
@@ -380,7 +529,7 @@ public class InterceptorsTest extends ProducerConsumerBase {
         consumer.close();
     }
 
-    @Test(timeOut = 5000)
+    @Test
     public void testConsumerInterceptorForNegativeAcksSend() throws PulsarClientException, InterruptedException {
         final int totalNumOfMessages = 100;
         CountDownLatch latch = new CountDownLatch(totalNumOfMessages / 2);
@@ -410,6 +559,11 @@ public class InterceptorsTest extends ProducerConsumerBase {
             public void onNegativeAcksSend(Consumer<String> consumer, Set<MessageId> messageIds) {
                 messageIds.forEach(messageId -> latch.countDown());
             }
+
+            @Override
+            public void onAckTimeoutSend(Consumer<String> consumer, Set<MessageId> messageIds) {
+
+            }
         };
 
         Consumer<String> consumer = pulsarClient.newConsumer(Schema.STRING)
@@ -434,6 +588,72 @@ public class InterceptorsTest extends ProducerConsumerBase {
             if (i % 2 == 0) {
                 consumer.negativeAcknowledge(message);
             } else {
+                consumer.acknowledge(message);
+            }
+        }
+
+        latch.await();
+        Assert.assertEquals(latch.getCount(), 0);
+
+        producer.close();
+        consumer.close();
+    }
+
+    @Test
+    public void testConsumerInterceptorForAckTimeoutSend() throws PulsarClientException, InterruptedException {
+        final int totalNumOfMessages = 100;
+        CountDownLatch latch = new CountDownLatch(totalNumOfMessages / 2);
+
+        ConsumerInterceptor<String> interceptor = new ConsumerInterceptor<String>() {
+            @Override
+            public void close() {
+
+            }
+
+            @Override
+            public Message<String> beforeConsume(Consumer<String> consumer, Message<String> message) {
+                return message;
+            }
+
+            @Override
+            public void onAcknowledge(Consumer<String> consumer, MessageId messageId, Throwable cause) {
+
+            }
+
+            @Override
+            public void onAcknowledgeCumulative(Consumer<String> consumer, MessageId messageId, Throwable cause) {
+
+            }
+
+            @Override
+            public void onNegativeAcksSend(Consumer<String> consumer, Set<MessageId> messageIds) {
+            }
+
+            @Override
+            public void onAckTimeoutSend(Consumer<String> consumer, Set<MessageId> messageIds) {
+                messageIds.forEach(messageId -> latch.countDown());
+            }
+        };
+
+        Producer<String> producer = pulsarClient.newProducer(Schema.STRING)
+                .topic("persistent://my-property/my-ns/my-topic")
+                .create();
+
+        Consumer<String> consumer = pulsarClient.newConsumer(Schema.STRING)
+                .topic("persistent://my-property/my-ns/my-topic")
+                .subscriptionName("foo")
+                .intercept(interceptor)
+                .ackTimeout(2, TimeUnit.SECONDS)
+                .subscribe();
+
+        for (int i = 0; i < totalNumOfMessages; i++) {
+            producer.send("Mock message");
+        }
+
+        for (int i = 0; i < totalNumOfMessages; i++) {
+            Message<String> message = consumer.receive();
+
+            if (i % 2 == 0) {
                 consumer.acknowledge(message);
             }
         }

@@ -1,6 +1,6 @@
 {
   "docs": {
-    "Getting started": [
+    "Get started": [
       "pulsar-2.0",
       "standalone",
       "standalone-docker",
@@ -18,6 +18,12 @@
       "concepts-tiered-storage",
       "concepts-schema-registry"
     ],
+    "Pulsar Schema": [
+      "schema-get-started",
+      "schema-understand",
+      "schema-evolution-compatibility",
+      "schema-manage"
+    ],
     "Pulsar Functions": [
       "functions-overview",
       "functions-quickstart",
@@ -25,7 +31,23 @@
       "functions-deploying",
       "functions-guarantees",
       "functions-state",
-      "functions-metrics"
+      "functions-metrics",
+      "functions-worker",
+      "functions-runtime",
+      "functions-deploying",
+      "functions-debugging"
+    ],
+    "Pulsar Functions（New）": [
+      "functions-overview-new",
+      "functions-worker",
+      "functions-runtime",
+      "functions-develop",
+      "functions-debug",
+      "functions-deploy",
+      "functions-configure",
+      "functions-monitor",
+      "functions-secure",
+      "functions-troubleshoot"
     ],
     "Pulsar IO": [
       "io-overview",
@@ -54,7 +76,8 @@
       "administration-dashboard",
       "administration-stats",
       "administration-load-balance",
-      "administration-proxy"
+      "administration-proxy",
+      "administration-upgrade"
     ],
     "Security": [
       "security-overview",
@@ -63,6 +86,7 @@
       "security-token-client",
       "security-token-admin",
       "security-athenz",
+      "security-kerberos",
       "security-authorization",
       "security-encryption",
       "security-extending"

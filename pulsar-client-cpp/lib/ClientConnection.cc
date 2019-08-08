@@ -119,8 +119,11 @@ static Result getResult(ServerError serverError) {
 }
 
 static bool file_exists(const std::string& path) {
+    if (path.empty()) {
+        return false;
+    }
     std::ifstream f(path);
-    return !f.bad();
+    return f.good();
 }
 
 ClientConnection::ClientConnection(const std::string& logicalAddress, const std::string& physicalAddress,
@@ -131,9 +134,17 @@ ClientConnection::ClientConnection(const std::string& logicalAddress, const std:
       operationsTimeout_(seconds(clientConfiguration.getOperationTimeoutSeconds())),
       authentication_(authentication),
       serverProtocolVersion_(ProtocolVersion_MIN),
+      maxMessageSize_(Commands::DefaultMaxMessageSize),
       executor_(executor),
       resolver_(executor->createTcpResolver()),
       socket_(executor->createSocket()),
+#if BOOST_VERSION >= 107000
+      strand_(boost::asio::make_strand(executor_->io_service_.get_executor())),
+#elif BOOST_VERSION >= 106600
+      strand_(executor_->io_service_.get_executor()),
+#else
+      strand_(executor_->io_service_),
+#endif
       logicalAddress_(logicalAddress),
       physicalAddress_(physicalAddress),
       cnxString_("[<none> -> " + physicalAddress + "] "),
@@ -170,12 +181,16 @@ ClientConnection::ClientConnection(const std::string& logicalAddress, const std:
             }
 
             std::string trustCertFilePath = clientConfiguration.getTlsTrustCertsFilePath();
-            if (file_exists(trustCertFilePath)) {
-                ctx.load_verify_file(trustCertFilePath);
+            if (!trustCertFilePath.empty()) {
+                if (file_exists(trustCertFilePath)) {
+                    ctx.load_verify_file(trustCertFilePath);
+                } else {
+                    LOG_ERROR(trustCertFilePath << ": No such trustCertFile");
+                    close();
+                    return;
+                }
             } else {
-                LOG_ERROR(trustCertFilePath << ": No such trustCertFile");
-                close();
-                return;
+                ctx.set_default_verify_paths();
             }
         }
 
@@ -218,6 +233,12 @@ void ClientConnection::handlePulsarConnected(const CommandConnected& cmdConnecte
         LOG_ERROR(cnxString_ << "Server version is not set");
         close();
         return;
+    }
+
+    if (cmdConnected.has_max_message_size()) {
+        LOG_DEBUG("Connection has max message size setting: " << cmdConnected.max_message_size());
+        maxMessageSize_ = cmdConnected.max_message_size();
+        LOG_DEBUG("Current max message size is: " << maxMessageSize_);
     }
 
     state_ = Ready;
@@ -330,9 +351,16 @@ void ClientConnection::handleTcpConnected(const boost::system::error_code& err,
                     return;
                 }
             }
+#if BOOST_VERSION >= 106600
             tlsSocket_->async_handshake(
                 boost::asio::ssl::stream<tcp::socket>::client,
-                std::bind(&ClientConnection::handleHandshake, shared_from_this(), std::placeholders::_1));
+                boost::asio::bind_executor(strand_, std::bind(&ClientConnection::handleHandshake,
+                                                              shared_from_this(), std::placeholders::_1)));
+#else
+            tlsSocket_->async_handshake(boost::asio::ssl::stream<tcp::socket>::client,
+                                        strand_.wrap(std::bind(&ClientConnection::handleHandshake,
+                                                               shared_from_this(), std::placeholders::_1)));
+#endif
         } else {
             handleHandshake(boost::system::errc::make_error_code(boost::system::errc::success));
         }
@@ -350,6 +378,12 @@ void ClientConnection::handleTcpConnected(const boost::system::error_code& err,
 }
 
 void ClientConnection::handleHandshake(const boost::system::error_code& err) {
+    if (err) {
+        LOG_ERROR(cnxString_ << "Handshake failed: " << err.message());
+        close();
+        return;
+    }
+
     bool connectingThroughProxy = logicalAddress_ != physicalAddress_;
     SharedBuffer buffer = Commands::newConnect(authentication_, logicalAddress_, connectingThroughProxy);
     // Send CONNECT command to broker
@@ -1126,29 +1160,55 @@ void ClientConnection::sendCommand(const SharedBuffer& cmd) {
 
     if (pendingWriteOperations_++ == 0) {
         // Write immediately to socket
-        asyncWrite(cmd.const_asio_buffer(),
-                   customAllocWriteHandler(std::bind(&ClientConnection::handleSend, shared_from_this(),
-                                                     std::placeholders::_1, cmd)));
+        if (tlsSocket_) {
+#if BOOST_VERSION >= 106600
+            boost::asio::post(strand_,
+                              std::bind(&ClientConnection::sendCommandInternal, shared_from_this(), cmd));
+#else
+            strand_.post(std::bind(&ClientConnection::sendCommandInternal, shared_from_this(), cmd));
+#endif
+        } else {
+            sendCommandInternal(cmd);
+        }
     } else {
         // Queue to send later
         pendingWriteBuffers_.push_back(cmd);
     }
 }
 
+void ClientConnection::sendCommandInternal(const SharedBuffer& cmd) {
+    asyncWrite(cmd.const_asio_buffer(),
+               customAllocWriteHandler(
+                   std::bind(&ClientConnection::handleSend, shared_from_this(), std::placeholders::_1, cmd)));
+}
+
 void ClientConnection::sendMessage(const OpSendMsg& opSend) {
     Lock lock(mutex_);
 
     if (pendingWriteOperations_++ == 0) {
-        PairSharedBuffer buffer = Commands::newSend(outgoingBuffer_, outgoingCmd_, opSend.producerId_,
-                                                    opSend.sequenceId_, getChecksumType(), opSend.msg_);
-
         // Write immediately to socket
-        asyncWrite(buffer, customAllocWriteHandler(std::bind(&ClientConnection::handleSendPair,
-                                                             shared_from_this(), std::placeholders::_1)));
+        if (tlsSocket_) {
+#if BOOST_VERSION >= 106600
+            boost::asio::post(strand_,
+                              std::bind(&ClientConnection::sendMessageInternal, shared_from_this(), opSend));
+#else
+            strand_.post(std::bind(&ClientConnection::sendMessageInternal, shared_from_this(), opSend));
+#endif
+        } else {
+            sendMessageInternal(opSend);
+        }
     } else {
         // Queue to send later
         pendingWriteBuffers_.push_back(opSend);
     }
+}
+
+void ClientConnection::sendMessageInternal(const OpSendMsg& opSend) {
+    PairSharedBuffer buffer = Commands::newSend(outgoingBuffer_, outgoingCmd_, opSend.producerId_,
+                                                opSend.sequenceId_, getChecksumType(), opSend.msg_);
+
+    asyncWrite(buffer, customAllocWriteHandler(std::bind(&ClientConnection::handleSendPair,
+                                                         shared_from_this(), std::placeholders::_1)));
 }
 
 void ClientConnection::handleSend(const boost::system::error_code& err, const SharedBuffer&) {
@@ -1355,6 +1415,8 @@ const std::string& ClientConnection::brokerAddress() const { return physicalAddr
 const std::string& ClientConnection::cnxString() const { return cnxString_; }
 
 int ClientConnection::getServerProtocolVersion() const { return serverProtocolVersion_; }
+
+int ClientConnection::getMaxMessageSize() const { return maxMessageSize_; }
 
 Commands::ChecksumType ClientConnection::getChecksumType() const {
     return getServerProtocolVersion() >= proto::v6 ? Commands::Crc32c : Commands::None;

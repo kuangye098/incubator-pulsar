@@ -140,7 +140,7 @@ public class FunctionRuntimeManager implements AutoCloseable{
                     workerConfig.getStateStorageServiceUrl(),
                     authConfig,
                     new ClearTextSecretsProvider(),
-                     null);
+                     null, null);
         } else if (workerConfig.getProcessContainerFactory() != null) {
             this.runtimeFactory = new ProcessRuntimeFactory(
                     workerConfig.getPulsarServiceUrl(),
@@ -166,6 +166,8 @@ public class FunctionRuntimeManager implements AutoCloseable{
                     workerConfig.getKubernetesContainerFactory().getExtraFunctionDependenciesDir(),
                     workerConfig.getKubernetesContainerFactory().getCustomLabels(),
                     workerConfig.getKubernetesContainerFactory().getPercentMemoryPadding(),
+                    workerConfig.getKubernetesContainerFactory().getCpuOverCommitRatio(),
+                    workerConfig.getKubernetesContainerFactory().getMemoryOverCommitRatio(),
                     StringUtils.isEmpty(workerConfig.getKubernetesContainerFactory().getPulsarServiceUrl()) ? workerConfig.getPulsarServiceUrl() : workerConfig.getKubernetesContainerFactory().getPulsarServiceUrl(),
                     StringUtils.isEmpty(workerConfig.getKubernetesContainerFactory().getPulsarAdminUrl()) ? workerConfig.getPulsarWebServiceUrl() : workerConfig.getKubernetesContainerFactory().getPulsarAdminUrl(),
                     workerConfig.getStateStorageServiceUrl(),

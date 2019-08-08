@@ -97,17 +97,19 @@ class ProcessRuntime implements Runtime {
         }
         switch (instanceConfig.getFunctionDetails().getRuntime()) {
             case JAVA:
-                logConfigFile = "java_instance_log4j2.yml";
+                logConfigFile = "java_instance_log4j2.xml";
                 break;
             case PYTHON:
                 logConfigFile = System.getenv("PULSAR_HOME") + "/conf/functions-logging/logging_config.ini";
+                break;
+            case GO:
                 break;
         }
         this.extraDependenciesDir = extraDependenciesDir;
         this.processArgs = RuntimeUtils.composeCmd(
             instanceConfig,
             instanceFile,
-            // DONT SET extra dependencies here (for python runtime),
+            // DONT SET extra dependencies here (for python or go runtime),
             // since process runtime is using Java ProcessBuilder,
             // we have to set the environment variable via ProcessBuilder
             FunctionDetails.Runtime.JAVA == instanceConfig.getFunctionDetails().getRuntime() ? extraDependenciesDir : null,

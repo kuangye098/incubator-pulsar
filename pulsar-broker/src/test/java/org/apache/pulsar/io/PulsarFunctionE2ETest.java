@@ -52,6 +52,7 @@ import org.apache.pulsar.common.policies.data.FunctionStatus;
 import org.apache.pulsar.common.policies.data.SubscriptionStats;
 import org.apache.pulsar.common.policies.data.TenantInfo;
 import org.apache.pulsar.common.policies.data.TopicStats;
+import org.apache.pulsar.common.util.FutureUtil;
 import org.apache.pulsar.functions.instance.InstanceUtils;
 import org.apache.pulsar.functions.utils.FunctionCommon;
 import org.apache.pulsar.functions.worker.FunctionRuntimeManager;
@@ -98,6 +99,7 @@ import static org.mockito.Mockito.spy;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotEquals;
+import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertTrue;
 
 /**
@@ -148,11 +150,7 @@ public class PulsarFunctionE2ETest {
 
         // delete all function temp files
         File dir = new File(System.getProperty("java.io.tmpdir"));
-        File[] foundFiles = dir.listFiles(new FilenameFilter() {
-            public boolean accept(File dir, String name) {
-                return name.startsWith("function");
-            }
-        });
+        File[] foundFiles = dir.listFiles((dir1, name) -> name.startsWith("function"));
 
         for (File file : foundFiles) {
             file.delete();
@@ -161,7 +159,7 @@ public class PulsarFunctionE2ETest {
         log.info("--- Setting up method {} ---", method.getName());
 
         // Start local bookkeeper ensemble
-        bkEnsemble = new LocalBookkeeperEnsemble(3, ZOOKEEPER_PORT, () -> PortManager.nextFreePort());
+        bkEnsemble = new LocalBookkeeperEnsemble(3, ZOOKEEPER_PORT, PortManager::nextFreePort);
         bkEnsemble.start();
 
         String brokerServiceUrl = "https://127.0.0.1:" + brokerWebServiceTlsPort;
@@ -170,11 +168,11 @@ public class PulsarFunctionE2ETest {
         config.setClusterName("use");
         Set<String> superUsers = Sets.newHashSet("superUser");
         config.setSuperUserRoles(superUsers);
-        config.setWebServicePort(brokerWebServicePort);
-        config.setWebServicePortTls(brokerWebServiceTlsPort);
+        config.setWebServicePort(Optional.ofNullable(brokerWebServicePort));
+        config.setWebServicePortTls(Optional.ofNullable(brokerWebServiceTlsPort));
         config.setZookeeperServers("127.0.0.1" + ":" + ZOOKEEPER_PORT);
-        config.setBrokerServicePort(brokerServicePort);
-        config.setBrokerServicePortTls(brokerServiceTlsPort);
+        config.setBrokerServicePort(Optional.ofNullable(brokerServicePort));
+        config.setBrokerServicePortTls(Optional.ofNullable(brokerServiceTlsPort));
         config.setLoadManagerClassName(SimpleLoadManagerImpl.class.getName());
         config.setTlsAllowInsecureConnection(true);
         config.setAdvertisedAddress("localhost");
@@ -236,8 +234,6 @@ public class PulsarFunctionE2ETest {
         propAdmin.getAdminRoles().add("superUser");
         propAdmin.setAllowedClusters(Sets.newHashSet(Lists.newArrayList("use")));
         admin.tenants().updateTenant(tenant, propAdmin);
-
-        System.setProperty(JAVA_INSTANCE_JAR_PROPERTY, "");
 
         // setting up simple web sever to test submitting function via URL
         fileServerThread = new Thread(() -> {
@@ -313,6 +309,9 @@ public class PulsarFunctionE2ETest {
 
     private WorkerService createPulsarFunctionWorker(ServiceConfiguration config) {
 
+        System.setProperty(JAVA_INSTANCE_JAR_PROPERTY,
+                FutureUtil.class.getProtectionDomain().getCodeSource().getLocation().getPath());
+        
         workerConfig = new WorkerConfig();
         workerConfig.setPulsarFunctionsNamespace(pulsarFunctionsNamespace);
         workerConfig.setSchedulerClassName(
@@ -437,7 +436,7 @@ public class PulsarFunctionE2ETest {
 
         TopicStats topicStats = admin.topics().getStats(sinkTopic2);
         assertEquals(topicStats.publishers.size(), 2);
-        assertTrue(topicStats.publishers.get(0).metadata != null);
+        assertNotNull(topicStats.publishers.get(0).metadata);
         assertTrue(topicStats.publishers.get(0).metadata.containsKey("id"));
         assertEquals(topicStats.publishers.get(0).metadata.get("id"), String.format("%s/%s/%s", tenant, namespacePortion, functionName));
 
@@ -490,11 +489,7 @@ public class PulsarFunctionE2ETest {
 
         // make sure all temp files are deleted
         File dir = new File(System.getProperty("java.io.tmpdir"));
-        File[] foundFiles = dir.listFiles(new FilenameFilter() {
-            public boolean accept(File dir, String name) {
-                return name.startsWith("function");
-            }
-        });
+        File[] foundFiles = dir.listFiles((dir1, name) -> name.startsWith("function"));
 
         Assert.assertEquals(foundFiles.length, 0, "Temporary files left over: " + Arrays.asList(foundFiles));
     }
@@ -724,11 +719,7 @@ public class PulsarFunctionE2ETest {
 
         // make sure all temp files are deleted
         File dir = new File(System.getProperty("java.io.tmpdir"));
-        File[] foundFiles = dir.listFiles(new FilenameFilter() {
-            public boolean accept(File dir, String name) {
-                return name.startsWith("function");
-            }
-        });
+        File[] foundFiles = dir.listFiles((dir1, name) -> name.startsWith("function"));
 
         Assert.assertEquals(foundFiles.length, 0, "Temporary files left over: " + Arrays.asList(foundFiles));
     }
@@ -784,7 +775,7 @@ public class PulsarFunctionE2ETest {
 
         TopicStats sourceStats = admin.topics().getStats(sinkTopic2);
         assertEquals(sourceStats.publishers.size(), 1);
-        assertTrue(sourceStats.publishers.get(0).metadata != null);
+        assertNotNull(sourceStats.publishers.get(0).metadata);
         assertTrue(sourceStats.publishers.get(0).metadata.containsKey("id"));
         assertEquals(sourceStats.publishers.get(0).metadata.get("id"), String.format("%s/%s/%s", tenant, namespacePortion, sourceName));
 
@@ -867,11 +858,7 @@ public class PulsarFunctionE2ETest {
 
         // make sure all temp files are deleted
         File dir = new File(System.getProperty("java.io.tmpdir"));
-        File[] foundFiles = dir.listFiles(new FilenameFilter() {
-            public boolean accept(File dir, String name) {
-                return name.startsWith("function");
-            }
-        });
+        File[] foundFiles = dir.listFiles((dir1, name) -> name.startsWith("function"));
 
         Assert.assertEquals(foundFiles.length, 0, "Temporary files left over: " + Arrays.asList(foundFiles));
     }
@@ -1219,11 +1206,7 @@ public class PulsarFunctionE2ETest {
 
         // make sure all temp files are deleted
         File dir = new File(System.getProperty("java.io.tmpdir"));
-        File[] foundFiles = dir.listFiles(new FilenameFilter() {
-            public boolean accept(File dir, String name) {
-                return name.startsWith("function");
-            }
-        });
+        File[] foundFiles = dir.listFiles((dir1, name) -> name.startsWith("function"));
 
         Assert.assertEquals(foundFiles.length, 0, "Temporary files left over: " + Arrays.asList(foundFiles));
     }

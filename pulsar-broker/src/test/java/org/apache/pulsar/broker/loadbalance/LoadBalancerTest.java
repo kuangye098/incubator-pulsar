@@ -23,6 +23,36 @@ import com.google.common.base.Charsets;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
+import static org.apache.pulsar.broker.cache.ConfigurationCacheService.POLICIES;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertNotNull;
+import static org.testng.Assert.assertTrue;
+import static org.testng.Assert.fail;
+
+import java.lang.reflect.Field;
+import java.net.InetAddress;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
+import java.util.concurrent.atomic.AtomicReference;
+
 import org.apache.bookkeeper.test.PortManager;
 import org.apache.bookkeeper.util.ZkUtils;
 import org.apache.pulsar.broker.PulsarService;
@@ -62,32 +92,6 @@ import org.testng.Assert;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
-
-import java.lang.reflect.Field;
-import java.net.URL;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.TreeMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
-import java.util.concurrent.atomic.AtomicReference;
-
-import static org.apache.pulsar.broker.cache.ConfigurationCacheService.POLICIES;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
-import static org.testng.Assert.fail;
 
 /**
  * Start two brokers in the same cluster and have them connect to the same zookeeper. When the PulsarService starts, it
@@ -132,12 +136,13 @@ public class LoadBalancerTest {
             brokerNativeBrokerPorts[i] = PortManager.nextFreePort();
 
             ServiceConfiguration config = new ServiceConfiguration();
-            config.setBrokerServicePort(brokerNativeBrokerPorts[i]);
+            config.setBrokerServicePort(Optional.ofNullable(brokerNativeBrokerPorts[i]));
             config.setClusterName("use");
             config.setAdvertisedAddress(localhost);
-            config.setWebServicePort(brokerWebServicePorts[i]);
+            config.setAdvertisedAddress("localhost");
+            config.setWebServicePort(Optional.ofNullable(brokerWebServicePorts[i]));
             config.setZookeeperServers("127.0.0.1" + ":" + ZOOKEEPER_PORT);
-            config.setBrokerServicePort(brokerNativeBrokerPorts[i]);
+            config.setBrokerServicePort(Optional.ofNullable(brokerNativeBrokerPorts[i]));
             config.setLoadManagerClassName(SimpleLoadManagerImpl.class.getName());
             config.setAdvertisedAddress(localhost+i);
             config.setLoadBalancerEnabled(false);
@@ -173,7 +178,7 @@ public class LoadBalancerTest {
         int loopCount = 0;
 
         while (loopCount < MAX_RETRIES) {
-            Thread.sleep(1000 * 1);
+            Thread.sleep(1000);
             // Check if the new leader is elected. If yes, break without incrementing the loopCount
             newLeader = les.getCurrentLeader();
             if (newLeader.equals(oldLeader) == false) {
@@ -224,7 +229,7 @@ public class LoadBalancerTest {
                 TopicName topicName = TopicName.get("persistent://pulsar/use/primary-ns/test-topic");
                 ResourceUnit found = pulsarServices[i].getLoadManager().get()
                         .getLeastLoaded(pulsarServices[i].getNamespaceService().getBundle(topicName)).get();
-                assertTrue(found != null);
+                assertNotNull(found);
             }
         } catch (InterruptedException | KeeperException e) {
             fail("Unable to read the data from Zookeeper - [{}]", e);
@@ -809,7 +814,7 @@ public class LoadBalancerTest {
         LocalZooKeeperCache originalLZK2 = (LocalZooKeeperCache) zkCacheField.get(pulsarServices[1]);
         zkCacheField.set(pulsarServices[0], mockCache);
         zkCacheField.set(pulsarServices[1], mockCache);
-        LoadManager loadManager = new SimpleLoadManagerImpl(pulsarServices[0]);
+        SimpleLoadManagerImpl loadManager = new SimpleLoadManagerImpl(pulsarServices[0]);
 
         // TODO move to its own test
         PulsarResourceDescription rd = new PulsarResourceDescription();
@@ -829,8 +834,7 @@ public class LoadBalancerTest {
         sortedRankings.setAccessible(true);
         sortedRankings.set(loadManager, sortedRankingsInstance);
 
-        ResourceUnit found = ((SimpleLoadManagerImpl) loadManager)
-                .getLeastLoaded(NamespaceName.get("pulsar/use/primary-ns.10")).get();
+        ResourceUnit found = loadManager.getLeastLoaded(NamespaceName.get("pulsar/use/primary-ns.10")).get();
         assertEquals("http://prod1-broker1.messaging.use.example.com:8080", found.getResourceId());
 
         zkCacheField.set(pulsarServices[0], originalLZK1);
@@ -959,8 +963,8 @@ public class LoadBalancerTest {
         }
         String inactiveBroker = "prod1-broker3.messaging.use.example.com:8080";
         // check owner list contains only two entries, broker-3 should not be in
-        assertTrue(namespaceOwner.size() == 2);
-        assertTrue(!namespaceOwner.containsKey(inactiveBroker));
+        assertEquals(namespaceOwner.size(), 2);
+        assertFalse(namespaceOwner.containsKey(inactiveBroker));
     }
 
     @Test(enabled = false)

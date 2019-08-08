@@ -561,14 +561,14 @@ TEST(BasicEndToEndTest, testMessageTooBig) {
     Result result = client.createProducer(topicName, conf, producer);
     ASSERT_EQ(ResultOk, result);
 
-    int size = Commands::MaxMessageSize + 1;
+    int size = Commands::DefaultMaxMessageSize + 1000 * 100;
     char *content = new char[size];
     Message msg = MessageBuilder().setAllocatedContent(content, size).build();
     result = producer.send(msg);
     ASSERT_EQ(ResultMessageTooBig, result);
 
     // Anything up to MaxMessageSize should be allowed
-    size = Commands::MaxMessageSize;
+    size = Commands::DefaultMaxMessageSize;
     msg = MessageBuilder().setAllocatedContent(content, size).build();
     result = producer.send(msg);
     ASSERT_EQ(ResultOk, result);
@@ -1114,7 +1114,7 @@ TEST(BasicEndToEndTest, testProduceMessageSize) {
     result = producerFuture.get(producer2);
     ASSERT_EQ(ResultOk, result);
 
-    int size = Commands::MaxMessageSize + 1;
+    int size = Commands::DefaultMaxMessageSize + 1000 * 100;
     char *content = new char[size];
     Message msg = MessageBuilder().setAllocatedContent(content, size).build();
     result = producer1.send(msg);
@@ -1165,7 +1165,7 @@ TEST(BasicEndToEndTest, testBigMessageSizeBatching) {
     result = client.createProducer(topicName, conf2, producer2);
     ASSERT_EQ(ResultOk, result);
 
-    int size = Commands::MaxMessageSize + 1;
+    int size = Commands::DefaultMaxMessageSize + 1000 * 100;
     char *content = new char[size];
     Message msg = MessageBuilder().setAllocatedContent(content, size).build();
     result = producer1.send(msg);
@@ -1548,6 +1548,57 @@ TEST(BasicEndToEndTest, testUnAckedMessageTimeout) {
     consumer.close();
     producer.close();
     client.close();
+}
+
+static long messagesReceived = 0;
+
+static void unackMessageListenerFunction(Consumer consumer, const Message &msg) { messagesReceived++; }
+
+TEST(BasicEndToEndTest, testPartitionTopicUnAckedMessageTimeout) {
+    Client client(lookupUrl);
+    long unAckedMessagesTimeoutMs = 10000;
+
+    std::string topicName = "persistent://public/default/testPartitionTopicUnAckedMessageTimeout";
+
+    // call admin api to make it partitioned
+    std::string url =
+        adminUrl + "admin/v2/persistent/public/default/testPartitionTopicUnAckedMessageTimeout/partitions";
+    int res = makePutRequest(url, "3");
+
+    LOG_INFO("res = " << res);
+    ASSERT_FALSE(res != 204 && res != 409);
+
+    std::string subName = "my-sub-name";
+
+    Producer producer;
+    Result result = client.createProducer(topicName, producer);
+    ASSERT_EQ(ResultOk, result);
+
+    Consumer consumer;
+    ConsumerConfiguration consConfig;
+    consConfig.setMessageListener(
+        std::bind(unackMessageListenerFunction, std::placeholders::_1, std::placeholders::_2));
+    consConfig.setUnAckedMessagesTimeoutMs(unAckedMessagesTimeoutMs);
+    result = client.subscribe(topicName, subName, consConfig, consumer);
+    ASSERT_EQ(ResultOk, result);
+    ASSERT_EQ(consumer.getSubscriptionName(), subName);
+
+    for (int i = 0; i < 10; i++) {
+        Message msg = MessageBuilder().setContent("test-" + std::to_string(i)).build();
+        producer.sendAsync(msg, nullptr);
+    }
+
+    producer.flush();
+    long timeWaited = 0;
+    while (true) {
+        // maximum wait time
+        ASSERT_LE(timeWaited, unAckedMessagesTimeoutMs * 3);
+        if (messagesReceived >= 10 * 2) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        timeWaited += 500;
+    }
 }
 
 TEST(BasicEndToEndTest, testUnAckedMessageTimeoutListener) {
@@ -1999,6 +2050,24 @@ TEST(BasicEndToEndTest, testpatternMultiTopicsHttpConsumerPubSub) {
     client.shutdown();
 }
 
+TEST(BasicEndToEndTest, testPatternEmptyUnsubscribe) {
+    Client client(lookupUrl);
+    std::string pattern = "persistent://public/default/patternEmptyUnsubscribe.*";
+
+    std::string subName = "testPatternMultiTopicsConsumer";
+
+    ConsumerConfiguration consConfig;
+    Consumer consumer;
+    Result result = client.subscribeWithRegex(pattern, subName, consConfig, consumer);
+    ASSERT_EQ(ResultOk, result);
+    ASSERT_EQ(consumer.getSubscriptionName(), subName);
+    LOG_INFO("created topics consumer on a pattern that match 0 topics");
+
+    ASSERT_EQ(ResultOk, consumer.unsubscribe());
+
+    client.shutdown();
+}
+
 // create a pattern consumer, which contains no match topics at beginning.
 // create 4 topics, in which 3 topics match the pattern.
 // verify PatternMultiTopicsConsumer subscribed matched topics, after a while,
@@ -2258,7 +2327,7 @@ TEST(BasicEndToEndTest, testSyncFlushBatchMessagesPartitionedTopic) {
     consConfig.setConsumerType(ConsumerExclusive);
     consConfig.setReceiverQueueSize(2);
     ASSERT_FALSE(consConfig.hasMessageListener());
-    Consumer consumer[numberOfPartitions];
+    std::vector<Consumer> consumer(numberOfPartitions);
     Result subscribeResult;
     for (int i = 0; i < numberOfPartitions; i++) {
         std::stringstream partitionedTopicName;
@@ -2470,7 +2539,7 @@ TEST(BasicEndToEndTest, testFlushInPartitionedProducer) {
     consConfig.setConsumerType(ConsumerExclusive);
     consConfig.setReceiverQueueSize(2);
     ASSERT_FALSE(consConfig.hasMessageListener());
-    Consumer consumer[numberOfPartitions];
+    std::vector<Consumer> consumer(numberOfPartitions);
     Result subscribeResult;
     for (int i = 0; i < numberOfPartitions; i++) {
         std::stringstream partitionedTopicName;
@@ -2796,56 +2865,6 @@ TEST(BasicEndToEndTest, testPartitionedReceiveAsyncFailedConsumer) {
     client.shutdown();
 }
 
-TEST(BasicEndToEndTest, testPreventDupConsumersOnSharedMode) {
-    ClientConfiguration config;
-    Client client(lookupUrl);
-    std::string subsName = "my-only-sub";
-    std::string topicName = "persistent://public/default/test-prevent-dup-consumers";
-    ConsumerConfiguration consumerConf;
-    consumerConf.setConsumerType(ConsumerShared);
-
-    Consumer consumerA;
-    Result resultA = client.subscribe(topicName, subsName, consumerConf, consumerA);
-    ASSERT_EQ(ResultOk, resultA);
-    ASSERT_EQ(consumerA.getSubscriptionName(), subsName);
-
-    Consumer consumerB;
-    Result resultB = client.subscribe(topicName, subsName, consumerConf, consumerB);
-    ASSERT_EQ(ResultOk, resultB);
-    ASSERT_EQ(consumerB.getSubscriptionName(), subsName);
-
-    // Since this is a shared consumer over same client cnx
-    // closing consumerA should result in consumerB also being closed.
-    ASSERT_EQ(ResultOk, consumerA.close());
-    ASSERT_EQ(ResultOk, consumerB.close());
-    ASSERT_EQ(ResultAlreadyClosed, consumerA.close());
-    ASSERT_EQ(ResultAlreadyClosed, consumerB.close());
-}
-
-TEST(BasicEndToEndTest, testDupConsumersOnSharedModeNotThrowsExcOnUnsubscribe) {
-    ClientConfiguration config;
-    Client client(lookupUrl);
-    std::string subsName = "my-only-sub";
-    std::string topicName =
-        "persistent://public/default/testDupConsumersOnSharedModeNotThrowsExcOnUnsubscribe";
-    ConsumerConfiguration consumerConf;
-    consumerConf.setConsumerType(ConsumerShared);
-
-    Consumer consumerA;
-    Result resultA = client.subscribe(topicName, subsName, consumerConf, consumerA);
-    ASSERT_EQ(ResultOk, resultA);
-    ASSERT_EQ(consumerA.getSubscriptionName(), subsName);
-
-    Consumer consumerB;
-    Result resultB = client.subscribe(topicName, subsName, consumerConf, consumerB);
-    ASSERT_EQ(ResultOk, resultB);
-    ASSERT_EQ(consumerB.getSubscriptionName(), subsName);
-
-    ASSERT_EQ(ResultOk, consumerA.unsubscribe());
-    // If dup consumers are allowed BrokerMetadataError will be the result of close()
-    ASSERT_EQ(ResultAlreadyClosed, consumerA.close());
-}
-
 void testNegativeAcks(const std::string &topic, bool batchingEnabled) {
     Client client(lookupUrl);
     Consumer consumer;
@@ -2911,38 +2930,6 @@ TEST(BasicEndToEndTest, testNegativeAcksWithPartitions) {
     ASSERT_FALSE(res != 204 && res != 409);
 
     testNegativeAcks(topicName, true);
-}
-
-TEST(BasicEndToEndTest, testPreventDupConsumersAllowSameSubForDifferentTopics) {
-    ClientConfiguration config;
-    Client client(lookupUrl);
-    std::string subsName = "my-only-sub";
-    std::string topicName =
-        "persistent://public/default/testPreventDupConsumersAllowSameSubForDifferentTopics";
-    ConsumerConfiguration consumerConf;
-    consumerConf.setConsumerType(ConsumerShared);
-
-    Consumer consumerA;
-    Result resultA = client.subscribe(topicName, subsName, consumerConf, consumerA);
-    ASSERT_EQ(ResultOk, resultA);
-    ASSERT_EQ(consumerA.getSubscriptionName(), subsName);
-
-    Consumer consumerB;
-    Result resultB = client.subscribe(topicName, subsName, consumerConf, consumerB);
-    ASSERT_EQ(ResultOk, resultB);
-    ASSERT_EQ(consumerB.getSubscriptionName(), subsName);
-
-    Consumer consumerC;
-    Result resultC = client.subscribe(topicName + "-different-topic", subsName, consumerConf, consumerC);
-    ASSERT_EQ(ResultOk, resultB);
-    ASSERT_EQ(consumerB.getSubscriptionName(), subsName);
-    ASSERT_EQ(ResultOk, consumerA.close());
-    ASSERT_EQ(ResultOk, consumerB.close());
-    ASSERT_EQ(ResultAlreadyClosed, consumerA.close());
-    ASSERT_EQ(ResultAlreadyClosed, consumerB.close());
-
-    // consumer C should be a different instance from A and B and should be with open state.
-    ASSERT_EQ(ResultOk, consumerC.close());
 }
 
 static long regexTestMessagesReceived = 0;

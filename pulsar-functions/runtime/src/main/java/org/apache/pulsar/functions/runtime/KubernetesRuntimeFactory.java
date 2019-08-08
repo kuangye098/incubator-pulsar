@@ -43,6 +43,7 @@ import org.apache.pulsar.functions.secretsproviderconfigurator.SecretsProviderCo
 
 import java.lang.reflect.Field;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Timer;
 import java.util.TimerTask;
 
@@ -75,6 +76,8 @@ public class KubernetesRuntimeFactory implements RuntimeFactory {
         private String changeConfigMap;
         private String changeConfigMapNamespace;
         private int percentMemoryPadding;
+        private double cpuOverCommitRatio;
+        private double memoryOverCommitRatio;
     }
     private final KubernetesInfo kubernetesInfo;
     private final Boolean submittingInsidePod;
@@ -107,6 +110,8 @@ public class KubernetesRuntimeFactory implements RuntimeFactory {
                                     String extraDependenciesDir,
                                     Map<String, String> customLabels,
                                     int percentMemoryPadding,
+                                    double cpuOverCommitRatio,
+                                    double memoryOverCommitRatio,
                                     String pulsarServiceUri,
                                     String pulsarAdminUri,
                                     String stateStorageServiceUri,
@@ -157,6 +162,8 @@ public class KubernetesRuntimeFactory implements RuntimeFactory {
         this.kubernetesInfo.setChangeConfigMap(changeConfigMap);
         this.kubernetesInfo.setChangeConfigMapNamespace(changeConfigMapNamespace);
         this.kubernetesInfo.setPercentMemoryPadding(percentMemoryPadding);
+        this.kubernetesInfo.setCpuOverCommitRatio(cpuOverCommitRatio);
+        this.kubernetesInfo.setMemoryOverCommitRatio(memoryOverCommitRatio);
         this.submittingInsidePod = submittingInsidePod;
         this.installUserCodeDependencies = installUserCodeDependencies;
         this.customLabels = customLabels;
@@ -185,7 +192,7 @@ public class KubernetesRuntimeFactory implements RuntimeFactory {
     public KubernetesRuntime createContainer(InstanceConfig instanceConfig, String codePkgUrl,
                                              String originalCodeFileName,
                                              Long expectedHealthCheckInterval) throws Exception {
-        String instanceFile;
+        String instanceFile = null;
         switch (instanceConfig.getFunctionDetails().getRuntime()) {
             case JAVA:
                 instanceFile = javaInstanceJarFile;
@@ -193,13 +200,16 @@ public class KubernetesRuntimeFactory implements RuntimeFactory {
             case PYTHON:
                 instanceFile = pythonInstanceFile;
                 break;
+            case GO:
+                throw new UnsupportedOperationException();
             default:
                 throw new RuntimeException("Unsupported Runtime " + instanceConfig.getFunctionDetails().getRuntime());
         }
 
         // adjust the auth config to support auth
-        if (authenticationEnabled && instanceConfig.getFunctionAuthenticationSpec() != null) {
-            getAuthProvider().configureAuthenticationConfig(authConfig, getFunctionAuthData(instanceConfig.getFunctionAuthenticationSpec()));
+        if (authenticationEnabled) {
+            getAuthProvider().configureAuthenticationConfig(authConfig,
+                    Optional.ofNullable(getFunctionAuthData(Optional.ofNullable(instanceConfig.getFunctionAuthenticationSpec()))));
         }
 
         return new KubernetesRuntime(
@@ -226,6 +236,8 @@ public class KubernetesRuntimeFactory implements RuntimeFactory {
             secretsProviderConfigurator,
             expectedMetricsCollectionInterval,
             this.kubernetesInfo.getPercentMemoryPadding(),
+            this.kubernetesInfo.getCpuOverCommitRatio(),
+            this.kubernetesInfo.getMemoryOverCommitRatio(),
             getAuthProvider(),
             authenticationEnabled);
     }

@@ -29,6 +29,7 @@ import org.apache.pulsar.client.api.schema.SchemaDefinition;
 import org.apache.pulsar.client.api.schema.SchemaInfoProvider;
 import org.apache.pulsar.client.internal.DefaultImplementation;
 import org.apache.pulsar.common.schema.KeyValue;
+import org.apache.pulsar.common.schema.KeyValueEncodingType;
 import org.apache.pulsar.common.schema.SchemaInfo;
 import org.apache.pulsar.common.schema.SchemaType;
 
@@ -114,6 +115,28 @@ public interface Schema<T> {
      * @return an object that represents the Schema associated metadata
      */
     SchemaInfo getSchemaInfo();
+
+    /**
+     * Check if this schema requires fetching schema info to configure the schema.
+     *
+     * @return true if the schema requires fetching schema info to configure the schema,
+     *         otherwise false.
+     */
+    default boolean requireFetchingSchemaInfo() {
+        return false;
+    }
+
+    /**
+     * Configure the schema to use the provided schema info.
+     *
+     * @param topic topic name
+     * @param componentName component name
+     * @param schemaInfo schema info
+     */
+    default void configureSchemaInfo(String topic, String componentName,
+                                     SchemaInfo schemaInfo) {
+        // no-op
+    }
 
     /**
      * Schema that doesn't perform any encoding on the message payloads. Accepts a byte array and it passes it through.
@@ -266,6 +289,13 @@ public interface Schema<T> {
      */
     static <K, V> Schema<KeyValue<K, V>> KeyValue(Schema<K> key, Schema<V> value) {
         return DefaultImplementation.newKeyValueSchema(key, value);
+    }
+
+    /**
+     * Key Value Schema using passed in key, value and encoding type schemas.
+     */
+    static <K, V> Schema<KeyValue<K, V>> KeyValue(Schema<K> key, Schema<V> value, KeyValueEncodingType keyValueEncodingType) {
+        return DefaultImplementation.newKeyValueSchema(key, value, keyValueEncodingType);
     }
 
     @Deprecated

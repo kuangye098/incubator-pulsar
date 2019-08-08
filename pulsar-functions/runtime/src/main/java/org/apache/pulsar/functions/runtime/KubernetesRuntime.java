@@ -62,7 +62,6 @@ import org.apache.pulsar.functions.proto.InstanceCommunication.FunctionStatus;
 import org.apache.pulsar.functions.proto.InstanceControlGrpc;
 import org.apache.pulsar.functions.secretsproviderconfigurator.SecretsProviderConfigurator;
 import org.apache.pulsar.functions.utils.Actions;
-import org.apache.pulsar.functions.utils.ComponentType;
 import org.apache.pulsar.functions.utils.FunctionCommon;
 
 import java.io.IOException;
@@ -73,6 +72,7 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -83,6 +83,7 @@ import static java.net.HttpURLConnection.HTTP_CONFLICT;
 import static java.net.HttpURLConnection.HTTP_NOT_FOUND;
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
 import static org.apache.pulsar.functions.auth.FunctionAuthUtils.getFunctionAuthData;
+import static org.apache.pulsar.functions.utils.FunctionCommon.roundDecimal;
 
 /**
  * Kubernetes based runtime for running functions.
@@ -135,6 +136,8 @@ public class KubernetesRuntime implements Runtime {
     private final String pulsarAdminUrl;
     private final SecretsProviderConfigurator secretsProviderConfigurator;
     private int percentMemoryPadding;
+    private double cpuOverCommitRatio;
+    private double memoryOverCommitRatio;
     private final KubernetesFunctionAuthProvider functionAuthDataCacheProvider;
     private final AuthenticationConfig authConfig;
 
@@ -161,6 +164,8 @@ public class KubernetesRuntime implements Runtime {
                       SecretsProviderConfigurator secretsProviderConfigurator,
                       Integer expectedMetricsCollectionInterval,
                       int percentMemoryPadding,
+                      double cpuOverCommitRatio,
+                      double memoryOverCommitRatio,
                       KubernetesFunctionAuthProvider functionAuthDataCacheProvider,
                       boolean authenticationEnabled) throws Exception {
         this.appsClient = appsClient;
@@ -176,6 +181,8 @@ public class KubernetesRuntime implements Runtime {
         this.pulsarAdminUrl = pulsarAdminUrl;
         this.secretsProviderConfigurator = secretsProviderConfigurator;
         this.percentMemoryPadding = percentMemoryPadding;
+        this.cpuOverCommitRatio = cpuOverCommitRatio;
+        this.memoryOverCommitRatio = memoryOverCommitRatio;
         this.authenticationEnabled = authenticationEnabled;
         String logConfigFile = null;
         String secretsProviderClassName = secretsProviderConfigurator.getSecretsProviderClassName(instanceConfig.getFunctionDetails());
@@ -185,11 +192,13 @@ public class KubernetesRuntime implements Runtime {
         }
         switch (instanceConfig.getFunctionDetails().getRuntime()) {
             case JAVA:
-                logConfigFile = "kubernetes_instance_log4j2.yml";
+                logConfigFile = "kubernetes_instance_log4j2.xml";
                 break;
             case PYTHON:
                 logConfigFile = pulsarRootDir + "/conf/functions-logging/console_logging_config.ini";
                 break;
+            case GO:
+                throw new UnsupportedOperationException();
         }
 
         this.authConfig = authConfig;
@@ -248,9 +257,9 @@ public class KubernetesRuntime implements Runtime {
         if (channel == null && stub == null) {
             channel = new ManagedChannel[instanceConfig.getFunctionDetails().getParallelism()];
             stub = new InstanceControlGrpc.InstanceControlFutureStub[instanceConfig.getFunctionDetails().getParallelism()];
+            String jobName = createJobName(instanceConfig.getFunctionDetails());
             for (int i = 0; i < instanceConfig.getFunctionDetails().getParallelism(); ++i) {
-                String address = createJobName(instanceConfig.getFunctionDetails()) + "-" +
-                        i + "." + createJobName(instanceConfig.getFunctionDetails());
+                String address = getServiceUrl(jobName, jobNamespace, i);
                 channel[i] = ManagedChannelBuilder.forAddress(address, GRPC_PORT)
                         .usePlaintext(true)
                         .build();
@@ -442,9 +451,9 @@ public class KubernetesRuntime implements Runtime {
     private void submitStatefulSet() throws Exception {
         final V1StatefulSet statefulSet = createStatefulSet();
         // Configure function authentication if needed
-        if (authenticationEnabled && instanceConfig.getFunctionAuthenticationSpec() != null) {
+        if (authenticationEnabled) {
             functionAuthDataCacheProvider.configureAuthDataStatefulSet(
-                    statefulSet, getFunctionAuthData(instanceConfig.getFunctionAuthenticationSpec()));
+                    statefulSet, Optional.ofNullable(getFunctionAuthData(Optional.ofNullable(instanceConfig.getFunctionAuthenticationSpec()))));
         }
 
         log.info("Submitting the following spec to k8 {}", appsClient.getApiClient().getJSON().serialize(statefulSet));
@@ -749,18 +758,22 @@ public class KubernetesRuntime implements Runtime {
         return Arrays.asList(
                 "sh",
                 "-c",
-                String.join(" ", getDownloadCommand(userCodePkgUrl, originalCodeFileName))
+                String.join(" ", getDownloadCommand(instanceConfig.getFunctionDetails().getTenant(),
+                        instanceConfig.getFunctionDetails().getNamespace(),
+                        instanceConfig.getFunctionDetails().getName(),
+                        originalCodeFileName))
                         + " && " + setShardIdEnvironmentVariableCommand()
                         + " && " + String.join(" ", processArgs)
         );
     }
 
-    private List<String> getDownloadCommand(String bkPath, String userCodeFilePath) {
+    private List<String> getDownloadCommand(String tenant, String namespace, String name, String userCodeFilePath) {
 
         // add auth plugin and parameters if necessary
         if (authenticationEnabled && authConfig != null) {
             if (isNotBlank(authConfig.getClientAuthenticationPlugin())
-                    && isNotBlank(authConfig.getClientAuthenticationParameters())) {
+                    && isNotBlank(authConfig.getClientAuthenticationParameters())
+                    && instanceConfig.getFunctionAuthenticationSpec() != null) {
                 return Arrays.asList(
                         pulsarRootDir + "/bin/pulsar-admin",
                         "--auth-plugin",
@@ -771,8 +784,12 @@ public class KubernetesRuntime implements Runtime {
                         pulsarAdminUrl,
                         "functions",
                         "download",
-                        "--path",
-                        bkPath,
+                        "--tenant",
+                        tenant,
+                        "--namespace",
+                        namespace,
+                        "--name",
+                        name,
                         "--destination-file",
                         userCodeFilePath);
             }
@@ -784,8 +801,12 @@ public class KubernetesRuntime implements Runtime {
                 pulsarAdminUrl,
                 "functions",
                 "download",
-                "--path",
-                bkPath,
+                "--tenant",
+                tenant,
+                "--namespace",
+                namespace,
+                "--name",
+                name,
                 "--destination-file",
                 userCodeFilePath);
     }
@@ -849,7 +870,7 @@ public class KubernetesRuntime implements Runtime {
 
     private Map<String, String> getLabels(Function.FunctionDetails functionDetails) {
         final Map<String, String> labels = new HashMap<>();
-        ComponentType componentType = InstanceUtils.calculateSubjectType(functionDetails);
+        Function.FunctionDetails.ComponentType componentType = InstanceUtils.calculateSubjectType(functionDetails);
         String component;
         switch (componentType) {
             case FUNCTION:
@@ -931,18 +952,33 @@ public class KubernetesRuntime implements Runtime {
 
         // set container resources
         final V1ResourceRequirements resourceRequirements = new V1ResourceRequirements();
-        final Map<String, Quantity> requests = new HashMap<>();
+        final Map<String, Quantity> resourceLimit = new HashMap<>();
+        final Map<String, Quantity> resourceRequest = new HashMap<>();
+
 
         long ram = resource != null && resource.getRam() != 0 ? resource.getRam() : 1073741824;
 
         // add memory padding
         long padding = Math.round(ram * (percentMemoryPadding / 100.0));
         long ramWithPadding = ram + padding;
+        long ramRequest =  (long) (ramWithPadding / memoryOverCommitRatio);
 
-        requests.put("memory", Quantity.fromString(Long.toString(ramWithPadding)));
-        requests.put("cpu", Quantity.fromString(Double.toString(resource != null && resource.getCpu() != 0 ? resource.getCpu() : 1)));
-        resourceRequirements.setRequests(requests);
-        resourceRequirements.setLimits(requests);
+        // set resource limits
+        double cpuLimit = resource != null && resource.getCpu() != 0 ? resource.getCpu() : 1;
+        // for cpu overcommiting
+        double cpuRequest = cpuLimit / cpuOverCommitRatio;
+
+        // round cpu to 3 decimal places as it is the finest cpu precision allowed
+        resourceLimit.put("cpu", Quantity.fromString(Double.toString(roundDecimal(cpuLimit, 3))));
+        resourceLimit.put("memory", Quantity.fromString(Long.toString(ramWithPadding)));
+
+        // set resource requests
+        // round cpu to 3 decimal places as it is the finest cpu precision allowed
+        resourceRequest.put("cpu", Quantity.fromString(Double.toString(roundDecimal(cpuRequest, 3))));
+        resourceRequest.put("memory", Quantity.fromString(Long.toString(ramRequest)));
+
+        resourceRequirements.setRequests(resourceRequest);
+        resourceRequirements.setLimits(resourceLimit);
         container.setResources(resourceRequirements);
 
         // set container ports
@@ -977,6 +1013,10 @@ public class KubernetesRuntime implements Runtime {
 
     private static String createJobName(String tenant, String namespace, String functionName) {
         return "pf-" + tenant + "-" + namespace + "-" + functionName;
+    }
+
+    private static String getServiceUrl(String jobName, String jobNamespace, int instanceId) {
+        return String.format("%s-%d.%s.%s.svc.cluster.local", jobName, instanceId, jobName, jobNamespace);
     }
 
     public static void doChecks(Function.FunctionDetails functionDetails) {
