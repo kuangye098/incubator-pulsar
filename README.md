@@ -19,7 +19,7 @@
 
 -->
 
-![logo](site/img/pulsar.png)
+![logo](site2/website/static/img/pulsar.svg)
 
 Pulsar is a distributed pub-sub messaging platform with a very
 flexible messaging model and an intuitive client API.
@@ -50,7 +50,7 @@ Learn more about Pulsar at https://pulsar.apache.org
 
 Requirements:
  * Java JDK 1.8
- * Maven
+ * Maven 3.3.9+
 
 Compile and install:
 
@@ -100,7 +100,7 @@ To configure annotation processing in IntelliJ:
    1. Set "Production sources directory:" to "target/generated-sources/annotations".
    2. Set "Test sources directory:" to "target/generated-test-sources/test-annotations".
 
-4. Click “OK”.
+4. Click "OK".
 
 5. Install the lombok plugin in intellij.
 

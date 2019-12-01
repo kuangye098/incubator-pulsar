@@ -31,13 +31,17 @@
  */
 package org.apache.pulsar.tests.integration.schema;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
+import lombok.NoArgsConstructor;
 import lombok.Setter;
 import lombok.ToString;
+
 import org.apache.avro.reflect.AvroDefault;
+
 import org.joda.time.DateTime;
 import org.joda.time.LocalDate;
 import org.joda.time.LocalTime;
@@ -99,7 +103,11 @@ public final class Schemas {
     }
 
     @Data
+    @Getter
+    @Setter
     @ToString
+    @NoArgsConstructor
+    @AllArgsConstructor
     @EqualsAndHashCode
     @Builder
     public static class AvroLogicalType{
@@ -123,5 +131,54 @@ public final class Schemas {
     }
 
     private Schemas() {}
+
+    @Data
+    @Getter
+    @Setter
+    @ToString
+    @EqualsAndHashCode
+    @AllArgsConstructor
+    @NoArgsConstructor
+    public static class PersonOne{
+        int id;
+    }
+
+    @Data
+    @Getter
+    @Setter
+    @ToString
+    @EqualsAndHashCode
+    @AllArgsConstructor
+    @NoArgsConstructor
+    public static class PersonTwo{
+        int id;
+
+        @AvroDefault("\"Tom\"")
+        String name;
+    }
+
+    @Data
+    @Getter
+    @Setter
+    @ToString
+    @EqualsAndHashCode
+    public static class PersonThree{
+        int id;
+
+        String name;
+    }
+
+    @Data
+    @Getter
+    @Setter
+    @ToString
+    @EqualsAndHashCode
+    public static class PersonFour{
+        int id;
+
+        String name;
+
+        int age;
+    }
 
 }

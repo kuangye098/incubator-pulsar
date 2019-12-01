@@ -4,6 +4,7 @@ title: Understand schema
 sidebar_label: Understand schema
 ---
 
+This chapter explains the basic concepts of Pulsar schema, focuses on the topics of particular importance, and provides additional background.
 
 ## SchemaInfo
 
@@ -59,7 +60,7 @@ Schema name (a string).
 
 Schema type, which determines how to interpret the schema data.
 
-* Predefined schema: see [here](schema-undstand.md#schema-type).
+* Predefined schema: see [here](schema-understand.md#schema-type).
 
 * Customized schema: it is left as an empty string.
 
@@ -111,10 +112,10 @@ This is the `SchemaInfo` of a string.
 
 ```text
 {
-    “name”: “test-string-schema”,
-    “type”: “STRING”,
-    “schema”: “”,
-    “properties”: {}
+    "name": "test-string-schema",
+    "type": "STRING",
+    "schema": "",
+    "properties": {}
 }
 ```
 
@@ -160,9 +161,9 @@ The conversions between **Pulsar schema types** and **language-specific primitiv
 | DOUBLE | double | float | float64|
 | BYTES | byte[], ByteBuffer, ByteBuf | bytes | []byte |
 | STRING | string | str | string| 
-| TIMESTAMP | java.sql.Timestamp | |
-| TIME | java.sql.Time | |
-| DATE | java.util.Date | |
+| TIMESTAMP | java.sql.Timestamp | | |
+| TIME | java.sql.Time | | |
+| DATE | java.util.Date | | |
 
 **Example**
 
@@ -251,7 +252,7 @@ This example shows how to construct a key/value schema and then use it to produc
         .create();
 
     final int key = 100;
-    final String value = "value-100”;
+    final String value = "value-100";
 
     // send the key/value message
     producer.newMessage()
@@ -386,7 +387,7 @@ byte[] kafkaMessageBytes = … ;
 pulsarProducer.produce(kafkaMessageBytes);
 ```
 
-### AUTO_CONSUME
+#### AUTO_CONSUME
 
 `AUTO_CONSUME` schema helps a Pulsar topic validate whether the bytes sent by a Pulsar topic is compatible with a consumer, that is, the Pulsar topic deserializes messages into language-specific objects using the `SchemaInfo` retrieved from broker-side. 
 

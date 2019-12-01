@@ -50,6 +50,8 @@ public class ServiceConfiguration implements PulsarConfiguration {
     @Category
     private static final String CATEGORY_SERVER = "Server";
     @Category
+    private static final String CATEGORY_PROTOCOLS = "Protocols";
+    @Category
     private static final String CATEGORY_STORAGE_BK = "Storage (BookKeeper)";
     @Category
     private static final String CATEGORY_STORAGE_ML = "Storage (Managed Ledger)";
@@ -81,6 +83,8 @@ public class ServiceConfiguration implements PulsarConfiguration {
     private static final String CATEGORY_SASL_AUTH = "SASL Authentication Provider";
     @Category
     private static final String CATEGORY_HTTP = "HTTP";
+    @Category
+    private static final String CATEGORY_TRANSACTION = "Transaction";
 
     /***** --- pulsar configuration --- ****/
     @FieldContext(
@@ -249,7 +253,7 @@ public class ServiceConfiguration implements PulsarConfiguration {
         category = CATEGORY_POLICIES,
         doc = "How often to check for inactive topics"
     )
-    private long brokerDeleteInactiveTopicsFrequencySeconds = 60;
+    private int brokerDeleteInactiveTopicsFrequencySeconds = 60;
     @FieldContext(
         category = CATEGORY_POLICIES,
         doc = "How frequently to proactively check and purge expired messages"
@@ -363,6 +367,38 @@ public class ServiceConfiguration implements PulsarConfiguration {
             + " unacked messages than this percentage limit and subscription will not receive any new messages "
             + " until that subscription acks back `limit/2` messages")
     private double maxUnackedMessagesPerSubscriptionOnBrokerBlocked = 0.16;
+    @FieldContext(
+            category = CATEGORY_POLICIES,
+            dynamic = true,
+            doc = "Tick time to schedule task that checks topic publish rate limiting across all topics  "
+                    + "Reducing to lower value can give more accuracy while throttling publish but "
+                    + "it uses more CPU to perform frequent check. (Disable publish throttling with value 0)"
+        )
+    private int topicPublisherThrottlingTickTimeMillis = 5;
+
+    @FieldContext(
+        category = CATEGORY_SERVER,
+        dynamic = true,
+        doc = "Tick time to schedule task that checks broker publish rate limiting across all topics  "
+            + "Reducing to lower value can give more accuracy while throttling publish but "
+            + "it uses more CPU to perform frequent check. (Disable publish throttling with value 0)"
+    )
+    private int brokerPublisherThrottlingTickTimeMillis = 50;
+    @FieldContext(
+        category = CATEGORY_SERVER,
+        dynamic = true,
+        doc = "Max Rate(in 1 seconds) of Message allowed to publish for a broker "
+            + "when broker publish rate limiting enabled. (Disable message rate limit with value 0)"
+    )
+    private int brokerPublisherThrottlingMaxMessageRate = 0;
+    @FieldContext(
+        category = CATEGORY_SERVER,
+        dynamic = true,
+        doc = "Max Rate(in 1 seconds) of Byte allowed to publish for a broker "
+            + "when broker publish rate limiting enabled. (Disable byte rate limit with value 0)"
+    )
+    private long brokerPublisherThrottlingMaxByteRate = 0;
+
     @FieldContext(
         category = CATEGORY_POLICIES,
         dynamic = true,
@@ -541,6 +577,20 @@ public class ServiceConfiguration implements PulsarConfiguration {
             category = CATEGORY_SERVER,
             doc = "Max number of snapshot to be cached per subscription.")
     private int replicatedSubscriptionsSnapshotMaxCachedPerSubscription = 10;
+
+    /**** --- Messaging Protocols --- ****/
+
+    @FieldContext(
+        category = CATEGORY_PROTOCOLS,
+        doc = "The directory to locate messaging protocol handlers"
+    )
+    private String protocolHandlerDirectory = "./protocols";
+
+    @FieldContext(
+        category = CATEGORY_PROTOCOLS,
+        doc = "List of messaging protocols to load, which is a list of protocol names"
+    )
+    private Set<String> messagingProtocols = Sets.newTreeSet();
 
     /***** --- TLS --- ****/
     @FieldContext(
@@ -769,7 +819,40 @@ public class ServiceConfiguration implements PulsarConfiguration {
             + "a single bookie.\n" +
             "If this flag is enabled, the client will use one single bookie (by " +
             "preference) to read all entries for a ledger.")
-    private boolean bookkeeperEnableStickyReads = true;
+    private boolean bookkeeperEnableStickyReads = false;
+
+    @FieldContext(category = CATEGORY_STORAGE_BK, doc = "Set the client security provider factory class name. "
+            + "Default: org.apache.bookkeeper.tls.TLSContextFactory")
+    private String bookkeeperTLSProviderFactoryClass = "org.apache.bookkeeper.tls.TLSContextFactory";
+
+    @FieldContext(category = CATEGORY_STORAGE_BK, doc = "Enable tls authentication with bookie")
+    private boolean bookkeeperTLSClientAuthentication = false;
+
+    @FieldContext(category = CATEGORY_STORAGE_BK, doc = "Supported type: PEM, JKS, PKCS12. Default value: PEM")
+    private String bookkeeperTLSKeyFileType = "PEM";
+
+    @FieldContext(category = CATEGORY_STORAGE_BK, doc = "Supported type: PEM, JKS, PKCS12. Default value: PEM")
+    private String bookkeeperTLSTrustCertTypes = "PEM";
+
+    @FieldContext(category = CATEGORY_STORAGE_BK, doc = "Path to file containing keystore password, "
+            + "if the client keystore is password protected.")
+    private String bookkeeperTLSKeyStorePasswordPath;
+
+    @FieldContext(category = CATEGORY_STORAGE_BK, doc = "Path to file containing truststore password, "
+            + "if the client truststore is password protected.")
+    private String bookkeeperTLSTrustStorePasswordPath;
+
+    @FieldContext(category = CATEGORY_STORAGE_BK, doc = "Path for the TLS private key file")
+    private String bookkeeperTLSKeyFilePath;
+
+    @FieldContext(category = CATEGORY_STORAGE_BK, doc = "Path for the TLS certificate file")
+    private String bookkeeperTLSCertificateFilePath;
+
+    @FieldContext(category = CATEGORY_STORAGE_BK, doc = "Path for the trusted TLS certificate file")
+    private String bookkeeperTLSTrustCertsFilePath;
+
+    @FieldContext(category = CATEGORY_STORAGE_BK, doc = "Enable/disable disk weight based placement. Default is false")
+    private boolean bookkeeperDiskWeightBasedPlacementEnabled = false;
 
     /**** --- Managed Ledger --- ****/
     @FieldContext(
@@ -777,19 +860,19 @@ public class ServiceConfiguration implements PulsarConfiguration {
         category = CATEGORY_STORAGE_ML,
         doc = "Number of bookies to use when creating a ledger"
     )
-    private int managedLedgerDefaultEnsembleSize = 1;
+    private int managedLedgerDefaultEnsembleSize = 2;
     @FieldContext(
         minValue = 1,
         category = CATEGORY_STORAGE_ML,
         doc = "Number of copies to store for each message"
     )
-    private int managedLedgerDefaultWriteQuorum = 1;
+    private int managedLedgerDefaultWriteQuorum = 2;
     @FieldContext(
         minValue = 1,
         category = CATEGORY_STORAGE_ML,
         doc = "Number of guaranteed copies (acks to wait before write is complete)"
     )
-    private int managedLedgerDefaultAckQuorum = 1;
+    private int managedLedgerDefaultAckQuorum = 2;
 
     //
     //
@@ -849,9 +932,20 @@ public class ServiceConfiguration implements PulsarConfiguration {
     private double managedLedgerDefaultMarkDeleteRateLimit = 1.0;
     @FieldContext(
         category = CATEGORY_STORAGE_ML,
-    	doc = "Allow automated creation of non-partition topics if set to true (default value)."
+    	doc = "Allow automated creation of topics if set to true (default value)."
     )
     private boolean allowAutoTopicCreation = true;
+    @FieldContext(
+            category = CATEGORY_STORAGE_ML,
+            doc = "The type of topic that is allowed to be automatically created.(partitioned/non-partitioned)"
+    )
+    private String allowAutoTopicCreationType = "non-partitioned";
+    @FieldContext(
+            category = CATEGORY_STORAGE_ML,
+            doc = "The number of partitioned topics that is allowed to be automatically created"
+                    + "if allowAutoTopicCreationType is partitioned."
+    )
+    private int defaultNumPartitions = 1;
     @FieldContext(
         category = CATEGORY_STORAGE_ML,
         doc = "Number of threads to be used for managed ledger tasks dispatching"
@@ -1125,9 +1219,12 @@ public class ServiceConfiguration implements PulsarConfiguration {
         doc = "How often to check pulsar connection is still alive"
     )
     private int keepAliveIntervalSeconds = 30;
+    @Deprecated
     @FieldContext(
         category = CATEGORY_POLICIES,
+        deprecated = true,
         doc = "How often broker checks for inactive topics to be deleted (topics with no subscriptions and no one connected)"
+            + "Deprecated in favor of using `brokerDeleteInactiveTopicsFrequencySeconds`"
     )
     private int brokerServicePurgeInactiveFrequencyInSeconds = 60;
     @FieldContext(
@@ -1252,6 +1349,20 @@ public class ServiceConfiguration implements PulsarConfiguration {
     )
     private int managedLedgerOffloadMaxThreads = 2;
 
+    /**** --- Transaction config variables --- ****/
+    @FieldContext(
+            category = CATEGORY_TRANSACTION,
+            doc = "Enable transaction coordinator in broker"
+    )
+    private boolean transactionCoordinatorEnabled = true;
+
+    @FieldContext(
+        category = CATEGORY_TRANSACTION,
+            doc = "Class name for transaction metadata store provider"
+    )
+    private String transactionMetadataStoreProviderClassName =
+            "org.apache.pulsar.transaction.coordinator.impl.InMemTransactionMetadataStoreProvider";
+
     /**
      * @deprecated See {@link #getConfigurationStoreServers}
      */
@@ -1321,5 +1432,23 @@ public class ServiceConfiguration implements PulsarConfiguration {
 
     public Optional<Integer> getWebServicePortTls() {
         return webServicePortTls;
+    }
+
+    public boolean isDefaultTopicTypePartitioned() {
+        return TopicType.PARTITIONED.toString().equals(allowAutoTopicCreationType);
+    }
+
+    enum TopicType {
+        PARTITIONED("partitioned"),
+        NON_PARTITIONED("non-partitioned");
+        private String type;
+
+        TopicType(String type) {
+            this.type = type;
+        }
+
+        public String toString() {
+            return type;
+        }
     }
 }

@@ -48,10 +48,12 @@ import org.apache.logging.log4j.core.LoggerContext;
 import org.apache.logging.log4j.core.config.Configuration;
 import org.apache.logging.log4j.core.config.LoggerConfig;
 import org.apache.pulsar.client.api.PulsarClient;
+import org.apache.pulsar.client.api.SubscriptionInitialPosition;
 import org.apache.pulsar.client.api.SubscriptionType;
 import org.apache.pulsar.client.impl.PulsarClientImpl;
 import org.apache.pulsar.common.functions.ConsumerConfig;
 import org.apache.pulsar.common.functions.FunctionConfig;
+import org.apache.pulsar.common.protocol.schema.LatestVersion;
 import org.apache.pulsar.functions.api.Function;
 import org.apache.pulsar.functions.api.Record;
 import org.apache.pulsar.functions.instance.state.StateContextImpl;
@@ -186,9 +188,17 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         // start the function thread
         functionClassLoader = loadJars();
 
-        Object object = Reflections.createInstance(
-                instanceConfig.getFunctionDetails().getClassName(),
-                functionClassLoader);
+        Object object;
+        if (instanceConfig.getFunctionDetails().getClassName().equals(org.apache.pulsar.functions.windowing.WindowFunctionExecutor.class.getName())) {
+            object = Reflections.createInstance(
+                    instanceConfig.getFunctionDetails().getClassName(),
+                    instanceClassLoader);
+        } else {
+            object = Reflections.createInstance(
+                    instanceConfig.getFunctionDetails().getClassName(),
+                    functionClassLoader);
+        }
+
 
         if (!(object instanceof Function) && !(object instanceof java.util.function.Function)) {
             throw new RuntimeException("User class must either be Function or java.util.Function");
@@ -213,7 +223,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         Logger instanceLog = LoggerFactory.getLogger(
                 "function-" + instanceConfig.getFunctionDetails().getName());
         return new ContextImpl(instanceConfig, instanceLog, client, secretsProvider,
-                collectorRegistry, metricsLabels, this.componentType, this.stats);
+                collectorRegistry, metricsLabels, this.componentType, this.stats, stateTable);
     }
 
     /**
@@ -232,10 +242,6 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                     this.componentType);
 
             javaInstance = setupJavaInstance();
-            if (null != stateTable) {
-                StateContextImpl stateContext = new StateContextImpl(stateTable);
-                javaInstance.getContext().setStateContext(stateContext);
-            }
             while (true) {
                 currentRecord = readInput();
 
@@ -289,7 +295,6 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             if (stats != null) {
                 stats.incrSysExceptions(t);
             }
-            return;
         } finally {
             log.info("Closing instance");
             close();
@@ -674,6 +679,15 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             pulsarSourceConfig.setProcessingGuarantees(
                     FunctionConfig.ProcessingGuarantees.valueOf(
                             this.instanceConfig.getFunctionDetails().getProcessingGuarantees().name()));
+
+            switch (sourceSpec.getSubscriptionPosition()) {
+                case EARLIEST:
+                    pulsarSourceConfig.setSubscriptionPosition(SubscriptionInitialPosition.Earliest);
+                    break;
+                default:
+                    pulsarSourceConfig.setSubscriptionPosition(SubscriptionInitialPosition.Latest);
+                    break;
+            }
 
             switch (sourceSpec.getSubscriptionType()) {
                 case FAILOVER:

@@ -164,7 +164,7 @@ public class NonPersistentDispatcherMultipleConsumers extends AbstractDispatcher
     }
 
     @Override
-    public synchronized CompletableFuture<Void> disconnectAllConsumers() {
+    public synchronized CompletableFuture<Void> disconnectAllConsumers(boolean isResetCursor) {
         closeFuture = new CompletableFuture<>();
         if (consumerList.isEmpty()) {
             closeFuture.complete(null);
@@ -175,7 +175,13 @@ public class NonPersistentDispatcherMultipleConsumers extends AbstractDispatcher
     }
 
     @Override
+    public synchronized void resetCloseFuture() {
+        closeFuture = null;
+    }
+
+    @Override
     public void reset() {
+        resetCloseFuture();
         IS_CLOSED_UPDATER.set(this, FALSE);
     }
 
@@ -217,7 +223,7 @@ public class NonPersistentDispatcherMultipleConsumers extends AbstractDispatcher
     }
 
     @Override
-    public Rate getMesssageDropRate() {
+    public Rate getMessageDropRate() {
         return msgDrop;
     }
 

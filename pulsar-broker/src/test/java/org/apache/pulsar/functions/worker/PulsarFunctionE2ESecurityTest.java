@@ -22,6 +22,7 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import io.jsonwebtoken.SignatureAlgorithm;
 import org.apache.bookkeeper.test.PortManager;
+import org.apache.pulsar.broker.NoOpShutdownService;
 import org.apache.pulsar.broker.PulsarService;
 import org.apache.pulsar.broker.ServiceConfiguration;
 import org.apache.pulsar.broker.ServiceConfigurationUtils;
@@ -45,7 +46,11 @@ import org.apache.pulsar.common.policies.data.AuthAction;
 import org.apache.pulsar.common.policies.data.ClusterData;
 import org.apache.pulsar.common.policies.data.SubscriptionStats;
 import org.apache.pulsar.common.policies.data.TenantInfo;
+import org.apache.pulsar.common.policies.data.TopicStats;
 import org.apache.pulsar.common.util.FutureUtil;
+import org.apache.pulsar.common.util.ObjectMapperFactory;
+import org.apache.pulsar.functions.runtime.thread.ThreadRuntimeFactory;
+import org.apache.pulsar.functions.runtime.thread.ThreadRuntimeFactoryConfig;
 import org.apache.pulsar.io.PulsarFunctionE2ETest;
 import org.apache.pulsar.zookeeper.LocalBookkeeperEnsemble;
 import org.slf4j.Logger;
@@ -60,6 +65,7 @@ import java.lang.reflect.Method;
 import java.net.URL;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
@@ -71,6 +77,7 @@ import static org.apache.pulsar.functions.utils.functioncache.FunctionCacheEntry
 import static org.mockito.Mockito.spy;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotEquals;
+import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.fail;
 
 public class PulsarFunctionE2ESecurityTest {
@@ -89,7 +96,7 @@ public class PulsarFunctionE2ESecurityTest {
     final String TENANT2 = "tenant2";
 
     final String NAMESPACE = "test-ns";
-    String pulsarFunctionsNamespace = TENANT + "/use/pulsar-function-admin";
+    String pulsarFunctionsNamespace = TENANT + "/pulsar-function-admin";
     String primaryHost;
     String workerId;
 
@@ -132,6 +139,7 @@ public class PulsarFunctionE2ESecurityTest {
         config.setBrokerServicePort(Optional.of(brokerServicePort));
         config.setLoadManagerClassName(SimpleLoadManagerImpl.class.getName());
         config.setAdvertisedAddress("localhost");
+        config.setAllowAutoTopicCreationType("non-partitioned");
 
         Set<String> providers = new HashSet<>();
         providers.add(AuthenticationProviderToken.class.getName());
@@ -155,6 +163,7 @@ public class PulsarFunctionE2ESecurityTest {
         brokerWebServiceUrl = new URL(brokerServiceUrl);
         Optional<WorkerService> functionWorkerService = Optional.of(functionsWorkerService);
         pulsar = new PulsarService(config, functionWorkerService);
+        pulsar.setShutdownService(new NoOpShutdownService());
         pulsar.start();
 
         AuthenticationToken authToken = new AuthenticationToken();
@@ -212,12 +221,14 @@ public class PulsarFunctionE2ESecurityTest {
 
         System.setProperty(JAVA_INSTANCE_JAR_PROPERTY,
                 FutureUtil.class.getProtectionDomain().getCodeSource().getLocation().getPath());
-        
+
         workerConfig = new WorkerConfig();
         workerConfig.setPulsarFunctionsNamespace(pulsarFunctionsNamespace);
         workerConfig.setSchedulerClassName(
                 org.apache.pulsar.functions.worker.scheduler.RoundRobinScheduler.class.getName());
-        workerConfig.setThreadContainerFactory(new WorkerConfig.ThreadContainerFactory().setThreadGroupName("use"));
+        workerConfig.setFunctionRuntimeFactoryClassName(ThreadRuntimeFactory.class.getName());
+        workerConfig.setFunctionRuntimeFactoryConfigs(
+                ObjectMapperFactory.getThreadLocal().convertValue(new ThreadRuntimeFactoryConfig().setThreadGroupName("use"), Map.class));
         // worker talks to local broker
         workerConfig.setPulsarServiceUrl("pulsar://127.0.0.1:" + config.getBrokerServicePort().get());
         workerConfig.setPulsarWebServiceUrl("http://127.0.0.1:" + config.getWebServicePort().get());
@@ -315,16 +326,15 @@ public class PulsarFunctionE2ESecurityTest {
 
             }
 
-            retryStrategically((test) -> {
+            assertTrue(retryStrategically((test) -> {
                 try {
                     return admin1.functions().getFunctionStatus(TENANT, NAMESPACE, functionName).getNumRunning() == 1
                             && admin1.topics().getStats(sourceTopic).subscriptions.size() == 1;
                 } catch (PulsarAdminException e) {
                     return false;
                 }
-            }, 5, 150);
+            }, 5, 150));
             // validate pulsar sink consumer has started on the topic
-            assertEquals(admin1.functions().getFunctionStatus(TENANT, NAMESPACE, functionName).getNumRunning(), 1);
             assertEquals(admin1.topics().getStats(sourceTopic).subscriptions.size(), 1);
 
             // create a producer that creates a topic at broker
@@ -369,15 +379,13 @@ public class PulsarFunctionE2ESecurityTest {
 
                 admin1.functions().updateFunctionWithUrl(functionConfig, jarFilePathUrl);
 
-                retryStrategically((test) -> {
+                assertTrue(retryStrategically((test) -> {
                     try {
                         return admin1.functions().getFunctionStatus(TENANT, NAMESPACE, functionName).getNumRunning() == 2;
                     } catch (PulsarAdminException e) {
                         return false;
                     }
-                }, 5, 150);
-
-                assertEquals(admin1.functions().getFunctionStatus(TENANT, NAMESPACE, functionName).getNumRunning(), 2);
+                }, 5, 150));
 
                 // test getFunctionInfo
                 try {
@@ -506,16 +514,18 @@ public class PulsarFunctionE2ESecurityTest {
 
                 admin1.functions().deleteFunction(TENANT, NAMESPACE, functionName);
 
-                retryStrategically((test) -> {
+                assertTrue(retryStrategically((test) -> {
                     try {
-                        return admin1.topics().getStats(sourceTopic).subscriptions.size() == 0;
+                        TopicStats stats = admin1.topics().getStats(sourceTopic);
+                        boolean done = stats.subscriptions.size() == 0;
+                        if (!done) {
+                            log.info("Topic subscription is not cleaned up yet : {}", stats);
+                        }
+                        return done;
                     } catch (PulsarAdminException e) {
                         return false;
                     }
-                }, 5, 150);
-
-                // make sure subscriptions are cleanup
-                assertEquals(admin1.topics().getStats(sourceTopic).subscriptions.size(), 0);
+                }, 100, 150));
             }
         }
     }
@@ -587,16 +597,15 @@ public class PulsarFunctionE2ESecurityTest {
 
             }
 
-            retryStrategically((test) -> {
+            assertTrue(retryStrategically((test) -> {
                 try {
                     return admin1.functions().getFunctionStatus(TENANT, NAMESPACE, functionName).getNumRunning() == 1
                             && admin1.topics().getStats(sourceTopic).subscriptions.size() == 1;
                 } catch (PulsarAdminException e) {
                     return false;
                 }
-            }, 5, 150);
+            }, 5, 150));
             // validate pulsar sink consumer has started on the topic
-            assertEquals(admin1.functions().getFunctionStatus(TENANT, NAMESPACE, functionName).getNumRunning(), 1);
             assertEquals(admin1.topics().getStats(sourceTopic).subscriptions.size(), 1);
 
             // create a producer that creates a topic at broker
@@ -641,15 +650,13 @@ public class PulsarFunctionE2ESecurityTest {
 
             admin1.functions().updateFunctionWithUrl(functionConfig, jarFilePathUrl);
 
-            retryStrategically((test) -> {
+            assertTrue(retryStrategically((test) -> {
                 try {
                     return admin1.functions().getFunctionStatus(TENANT, NAMESPACE, functionName).getNumRunning() == 2;
                 } catch (PulsarAdminException e) {
                     return false;
                 }
-            }, 5, 150);
-
-            assertEquals(admin1.functions().getFunctionStatus(TENANT, NAMESPACE, functionName).getNumRunning(), 2);
+            }, 5, 150));
 
             // test getFunctionInfo
             try {
@@ -779,16 +786,18 @@ public class PulsarFunctionE2ESecurityTest {
 
             admin1.functions().deleteFunction(TENANT, NAMESPACE, functionName);
 
-            retryStrategically((test) -> {
+            assertTrue(retryStrategically((test) -> {
                 try {
-                    return admin1.topics().getStats(sourceTopic).subscriptions.size() == 0;
+                    TopicStats stats = admin1.topics().getStats(sourceTopic);
+                    boolean done = stats.subscriptions.size() == 0;
+                    if (!done) {
+                        log.info("Topic subscription is not cleaned up yet : {}", stats);
+                    }
+                    return done;
                 } catch (PulsarAdminException e) {
                     return false;
                 }
-            }, 5, 150);
-
-            // make sure subscriptions are cleanup
-            assertEquals(admin1.topics().getStats(sourceTopic).subscriptions.size(), 0);
+            }, 5, 150));
         }
     }
 }

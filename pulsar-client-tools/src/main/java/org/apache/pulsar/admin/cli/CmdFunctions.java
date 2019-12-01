@@ -300,6 +300,8 @@ public class CmdFunctions extends CmdBase {
         @Parameter(names = "--max-message-retries", description = "How many times should we try to process a message before giving up")
         protected Integer maxMessageRetries;
         @Parameter(names = "--dead-letter-topic", description = "The topic where messages that are not processed successfully are sent to")
+        protected String customRuntimeOptions;
+        @Parameter(names = "--custom-runtime-options", description = "A string that encodes options to customize the runtime, see docs for configured runtime for details")
         protected String deadLetterTopic;
         protected FunctionConfig functionConfig;
         protected String userCodeFile;
@@ -435,6 +437,10 @@ public class CmdFunctions extends CmdBase {
 
             if (timeoutMs != null) {
                 functionConfig.setTimeoutMs(timeoutMs);
+            }
+
+            if (customRuntimeOptions != null) {
+                functionConfig.setCustomRuntimeOptions(customRuntimeOptions);
             }
 
             // window configs
@@ -805,7 +811,7 @@ public class CmdFunctions extends CmdBase {
     @Parameters(commandDescription = "Fetch the current state associated with a Pulsar Function")
     class StateGetter extends FunctionCommand {
 
-        @Parameter(names = { "-k", "--key" }, description = "key")
+        @Parameter(names = { "-k", "--key" }, description = "Key name of State")
         private String key = null;
 
         @Parameter(names = { "-w", "--watch" }, description = "Watch for changes in the value associated with a key for a Pulsar Function")
@@ -813,6 +819,9 @@ public class CmdFunctions extends CmdBase {
 
         @Override
         void runCmd() throws Exception {
+            if (isBlank(key)) {
+                throw new ParameterException("State key needs to be specified");
+            }
             do {
                 try {
                     FunctionState functionState = admin.functions()

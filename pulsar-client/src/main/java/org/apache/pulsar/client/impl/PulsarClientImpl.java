@@ -62,6 +62,7 @@ import org.apache.pulsar.client.api.Schema;
 import org.apache.pulsar.client.api.SubscriptionType;
 import org.apache.pulsar.client.api.schema.SchemaInfoProvider;
 import org.apache.pulsar.client.api.AuthenticationFactory;
+import org.apache.pulsar.client.api.transaction.TransactionBuilder;
 import org.apache.pulsar.client.impl.ConsumerImpl.SubscriptionMode;
 import org.apache.pulsar.client.impl.conf.ClientConfigurationData;
 import org.apache.pulsar.client.impl.conf.ConsumerConfigurationData;
@@ -70,6 +71,7 @@ import org.apache.pulsar.client.impl.conf.ReaderConfigurationData;
 import org.apache.pulsar.client.impl.schema.AutoConsumeSchema;
 import org.apache.pulsar.client.impl.schema.AutoProduceBytesSchema;
 import org.apache.pulsar.client.impl.schema.generic.MultiVersionSchemaInfoProvider;
+import org.apache.pulsar.client.impl.transaction.TransactionBuilderImpl;
 import org.apache.pulsar.client.util.ExecutorProvider;
 import org.apache.pulsar.common.api.proto.PulsarApi.CommandGetTopicsOfNamespace.Mode;
 import org.apache.pulsar.common.naming.NamespaceName;
@@ -204,7 +206,7 @@ public class PulsarClientImpl implements PulsarClient {
     }
 
     public <T> CompletableFuture<Producer<T>> createProducerAsync(ProducerConfigurationData conf, Schema<T> schema,
-          ProducerInterceptors<T> interceptors) {
+          ProducerInterceptors interceptors) {
         if (conf == null) {
             return FutureUtil.failedFuture(
                 new PulsarClientException.InvalidConfigurationException("Producer configuration undefined"));
@@ -228,6 +230,9 @@ public class PulsarClientImpl implements PulsarClient {
 
         if (schema instanceof AutoProduceBytesSchema) {
             AutoProduceBytesSchema autoProduceBytesSchema = (AutoProduceBytesSchema) schema;
+            if (autoProduceBytesSchema.schemaInitialized()) {
+                return createProducerAsync(topic, conf, schema, interceptors);
+            }
             return lookup.getSchema(TopicName.get(conf.getTopicName()))
                     .thenCompose(schemaInfoOptional -> {
                         if (schemaInfoOptional.isPresent()) {
@@ -246,7 +251,7 @@ public class PulsarClientImpl implements PulsarClient {
     private <T> CompletableFuture<Producer<T>> createProducerAsync(String topic,
                                                                    ProducerConfigurationData conf,
                                                                    Schema<T> schema,
-                                                                   ProducerInterceptors<T> interceptors) {
+                                                                   ProducerInterceptors interceptors) {
         CompletableFuture<Producer<T>> producerCreatedFuture = new CompletableFuture<>();
 
         getPartitionedTopicMetadata(topic).thenAccept(metadata -> {
@@ -349,7 +354,7 @@ public class PulsarClientImpl implements PulsarClient {
                 int partitionIndex = TopicName.getPartitionIndex(topic);
                 consumer = ConsumerImpl.newConsumerImpl(PulsarClientImpl.this, topic, conf, listenerThread, partitionIndex, false,
                         consumerSubscribedFuture, SubscriptionMode.Durable, null, schema, interceptors,
-                        this.conf.getDefaultBackoffIntervalNanos(), this.conf.getMaxBackoffIntervalNanos());
+                        true /* createTopicIfDoesNotExist */);
             }
 
             synchronized (consumers) {
@@ -368,7 +373,8 @@ public class PulsarClientImpl implements PulsarClient {
         CompletableFuture<Consumer<T>> consumerSubscribedFuture = new CompletableFuture<>();
 
         ConsumerBase<T> consumer = new MultiTopicsConsumerImpl<>(PulsarClientImpl.this, conf,
-                externalExecutorProvider.getExecutor(), consumerSubscribedFuture, schema, interceptors);
+                externalExecutorProvider.getExecutor(), consumerSubscribedFuture, schema, interceptors,
+                true /* createTopicIfDoesNotExist */);
 
         synchronized (consumers) {
             consumers.put(consumer, Boolean.TRUE);
@@ -548,7 +554,11 @@ public class PulsarClientImpl implements PulsarClient {
             consumersToClose.forEach(c -> futures.add(c.closeAsync()));
         }
 
-        FutureUtil.waitForAll(futures).thenRun(() -> {
+        // Need to run the shutdown sequence in a separate thread to prevent deadlocks
+        // If there are consumers or producers that need to be shutdown we cannot use the same thread
+        // to shutdown the EventLoopGroup as well as that would be trying to shutdown itself thus a deadlock
+        // would happen
+        FutureUtil.waitForAll(futures).thenRun(() -> new Thread(() -> {
             // All producers & consumers are now closed, we can stop the client safely
             try {
                 shutdown();
@@ -557,7 +567,7 @@ public class PulsarClientImpl implements PulsarClient {
             } catch (PulsarClientException e) {
                 closeFuture.completeExceptionally(e);
             }
-        }).exceptionally(exception -> {
+        }, "pulsar-client-shutdown-thread").start()).exceptionally(exception -> {
             closeFuture.completeExceptionally(exception);
             return null;
         });
@@ -740,10 +750,12 @@ public class PulsarClientImpl implements PulsarClient {
             if (schema.requireFetchingSchemaInfo()) {
                 return schemaInfoProvider.getLatestSchema().thenCompose(schemaInfo -> {
                     if (null == schemaInfo) {
-                        // no schema info is found
-                        return FutureUtil.failedFuture(
-                            new PulsarClientException.NotFoundException(
-                                "No latest schema found for topic " + topicName));
+                        if (!(schema instanceof AutoConsumeSchema)) {
+                            // no schema info is found
+                            return FutureUtil.failedFuture(
+                                    new PulsarClientException.NotFoundException(
+                                            "No latest schema found for topic " + topicName));
+                        }
                     }
                     try {
                         log.info("Configuring schema for topic {} : {}", topicName, schemaInfo);
@@ -759,6 +771,17 @@ public class PulsarClientImpl implements PulsarClient {
             }
         }
         return CompletableFuture.completedFuture(null);
+    }
+
+    //
+    // Transaction related API
+    //
+
+    // This method should be exposed in the PulsarClient interface. Only expose it when all the transaction features
+    // are completed.
+    // @Override
+    public TransactionBuilder newTransaction() {
+        return new TransactionBuilderImpl(this);
     }
 
 }
